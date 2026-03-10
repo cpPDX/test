@@ -166,6 +166,49 @@ kbd {
     box-shadow: 0 0 20px rgba(255, 0, 255, 0.35);
 }
 
+.leaderboard-container {
+    margin-top: 12px;
+}
+
+.leaderboard-title {
+    font-size: 11px;
+    color: #ff00ff;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    text-shadow: 0 0 8px rgba(255, 0, 255, 0.4);
+    text-align: center;
+}
+
+.leaderboard-table {
+    border-collapse: collapse;
+    font-size: 13px;
+    letter-spacing: 2px;
+    margin: 0 auto;
+}
+
+.leaderboard-table tr {
+    height: 20px;
+}
+
+.lb-rank {
+    color: #555566;
+    padding-right: 10px;
+    text-align: right;
+}
+
+.lb-initials {
+    color: #00ffcc;
+    padding-right: 16px;
+    text-shadow: 0 0 6px rgba(0, 255, 204, 0.3);
+}
+
+.lb-score {
+    color: #ff00ff;
+    text-align: right;
+    text-shadow: 0 0 6px rgba(255, 0, 255, 0.3);
+}
+
 .hidden {
     display: none !important;
 }
