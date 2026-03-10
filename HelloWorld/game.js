@@ -15,6 +15,8 @@ const SPEED_INCREMENT = 0.001;
 const PLAYER_WIDTH = 36;
 const PLAYER_HEIGHT = 50;
 const DUCK_HEIGHT = 25;
+const DOUBLE_JUMP_FORCE = -11;
+const ADVANCED_PHASE_SCORE = 500; // Score threshold to unlock double jump
 
 // Game state: start | playing | paused | gameover
 let state = "start";
@@ -25,6 +27,8 @@ let frameCount = 0;
 let obstacles = [];
 let particles = [];
 let groundOffset = 0;
+let doubleJumpUnlocked = false; // tracks if we've shown the unlock notification
+let unlockFlashTimer = 0;
 
 // City background layers (parallax)
 const buildings = [];
@@ -79,12 +83,16 @@ const player = {
   jumping: false,
   ducking: false,
   trailTimer: 0,
+  jumpsUsed: 0,    // 0 = grounded, 1 = single jumped, 2 = double jumped
+  canDoubleJump: false,
 };
 
 // Input
 const keys = {};
+const justPressed = {}; // Track fresh key presses for double jump
 
 document.addEventListener("keydown", (e) => {
+  if (!keys[e.code]) justPressed[e.code] = true;
   keys[e.code] = true;
 
   if (e.code === "Escape") {
@@ -122,6 +130,7 @@ canvas.addEventListener("touchstart", (e) => {
   if (state === "paused") return;
   if (state !== "playing") return;
   if (y < canvas.height / 2) {
+    justPressed["ArrowUp"] = true;
     keys["ArrowUp"] = true;
   } else {
     keys["ArrowDown"] = true;
@@ -146,6 +155,10 @@ function startGame() {
   player.vy = 0;
   player.jumping = false;
   player.ducking = false;
+  player.jumpsUsed = 0;
+  player.canDoubleJump = false;
+  doubleJumpUnlocked = false;
+  unlockFlashTimer = 0;
   generateBuildings();
 
   document.getElementById("start-screen").classList.add("hidden");
@@ -178,6 +191,8 @@ function quitGame() {
   player.vy = 0;
   player.jumping = false;
   player.ducking = false;
+  player.jumpsUsed = 0;
+  player.canDoubleJump = false;
   generateBuildings();
 
   document.getElementById("pause-screen").classList.add("hidden");
@@ -259,25 +274,40 @@ function createObstacle() {
 }
 
 function updatePlayer() {
-  const wantJump = keys["Space"] || keys["ArrowUp"] || keys["KeyW"];
+  const jumpKey = justPressed["Space"] || justPressed["ArrowUp"] || justPressed["KeyW"];
   const wantDuck = keys["ArrowDown"] || keys["KeyS"];
 
-  if (wantJump && !player.jumping) {
-    player.vy = JUMP_FORCE;
+  // Check if double jump is unlocked
+  player.canDoubleJump = score >= ADVANCED_PHASE_SCORE;
+  const maxJumps = player.canDoubleJump ? 2 : 1;
+
+  if (jumpKey && player.jumpsUsed < maxJumps) {
+    const isDoubleJump = player.jumpsUsed === 1;
+    player.vy = isDoubleJump ? DOUBLE_JUMP_FORCE : JUMP_FORCE;
     player.jumping = true;
-    // Jump particles
-    for (let i = 0; i < 6; i++) {
+    player.jumpsUsed++;
+
+    // Jump particles — different color for double jump
+    const pColor = isDoubleJump ? "#ff00ff" : "#00ffcc";
+    const pY = isDoubleJump ? player.y + player.height : GROUND_Y;
+    const count = isDoubleJump ? 10 : 6;
+    for (let i = 0; i < count; i++) {
       particles.push({
         x: player.x + player.width / 2 + (Math.random() - 0.5) * 20,
-        y: GROUND_Y,
-        vx: (Math.random() - 0.5) * 3,
-        vy: -Math.random() * 3,
-        life: 0.6,
-        size: 2,
-        color: "#00ffcc",
+        y: pY,
+        vx: (Math.random() - 0.5) * (isDoubleJump ? 5 : 3),
+        vy: -Math.random() * (isDoubleJump ? 4 : 3),
+        life: isDoubleJump ? 0.8 : 0.6,
+        size: isDoubleJump ? 3 : 2,
+        color: pColor,
       });
     }
   }
+
+  // Clear justPressed flags
+  justPressed["Space"] = false;
+  justPressed["ArrowUp"] = false;
+  justPressed["KeyW"] = false;
 
   if (wantDuck && !player.jumping) {
     player.ducking = true;
@@ -298,6 +328,7 @@ function updatePlayer() {
     player.y = GROUND_Y - player.height;
     player.vy = 0;
     player.jumping = false;
+    player.jumpsUsed = 0;
   }
 
   // Running trail
@@ -737,6 +768,42 @@ function drawHUD() {
   ctx.font = "9px 'Courier New', monospace";
   ctx.fillText("SPD", 14, 28);
 
+  // Double jump indicator
+  if (player.canDoubleJump) {
+    const maxJumps = 2;
+    const jumpsLeft = maxJumps - player.jumpsUsed;
+    for (let i = 0; i < maxJumps; i++) {
+      const ix = 14 + i * 12;
+      const iy = 34;
+      if (i < jumpsLeft) {
+        ctx.fillStyle = "#ff00ff";
+        ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 300) * 0.3;
+      } else {
+        ctx.fillStyle = "#332233";
+        ctx.globalAlpha = 0.4;
+      }
+      // Small upward arrow / chevron
+      ctx.beginPath();
+      ctx.moveTo(ix, iy + 6);
+      ctx.lineTo(ix + 4, iy);
+      ctx.lineTo(ix + 8, iy + 6);
+      ctx.lineTo(ix + 6, iy + 6);
+      ctx.lineTo(ix + 4, iy + 2);
+      ctx.lineTo(ix + 2, iy + 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  } else if (score > ADVANCED_PHASE_SCORE * 0.7) {
+    // Tease: approaching unlock
+    const pct = (score - ADVANCED_PHASE_SCORE * 0.7) / (ADVANCED_PHASE_SCORE * 0.3);
+    ctx.fillStyle = "#ff00ff";
+    ctx.globalAlpha = 0.15 + pct * 0.2;
+    ctx.font = "8px 'Courier New', monospace";
+    ctx.fillText("x2 JUMP " + Math.floor(pct * 100) + "%", 14, 40);
+    ctx.globalAlpha = 1;
+  }
+
   // Pause icon (tap target for mobile)
   ctx.fillStyle = "#555566";
   ctx.globalAlpha = 0.5;
@@ -764,6 +831,31 @@ function draw() {
 
   drawParticles();
   drawHUD();
+
+  // Double jump unlock notification
+  if (unlockFlashTimer > 0) {
+    const alpha = Math.min(1, unlockFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = "bold 20px 'Courier New', monospace";
+    ctx.textAlign = "center";
+
+    // Glow background
+    ctx.fillStyle = "#ff00ff";
+    ctx.globalAlpha = alpha * 0.15;
+    ctx.fillRect(canvas.width / 2 - 140, 60, 280, 35);
+
+    // Text
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "#ff00ff";
+    ctx.shadowColor = "#ff00ff";
+    ctx.shadowBlur = 15;
+    ctx.fillText("DOUBLE JUMP UNLOCKED", canvas.width / 2, 84);
+    ctx.shadowBlur = 0;
+    ctx.textAlign = "left";
+    ctx.restore();
+  }
+
   drawScanlines();
 }
 
@@ -776,6 +868,13 @@ function update() {
 
   gameSpeed = Math.min(MAX_SPEED, INITIAL_SPEED + score * SPEED_INCREMENT);
   score += gameSpeed * 0.05;
+
+  // Check for double jump unlock
+  if (!doubleJumpUnlocked && score >= ADVANCED_PHASE_SCORE) {
+    doubleJumpUnlocked = true;
+    unlockFlashTimer = 180; // ~3 seconds at 60fps
+  }
+  if (unlockFlashTimer > 0) unlockFlashTimer--;
 
   updatePlayer();
   updateObstacles();
