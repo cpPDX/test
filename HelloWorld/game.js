@@ -9,8 +9,12 @@ const GROUND_Y = 290;
 const GRAVITY = 0.6;
 const JUMP_FORCE = -13;
 const INITIAL_SPEED = 5;
-const MAX_SPEED = 13;
-const SPEED_INCREMENT = 0.001;
+const MAX_SPEED = 14;
+
+// Difficulty milestones
+const SPEED_TIER_SCORE = 750;
+const FAST_DRONE_SCORE = 1000;
+const COMBO_OBSTACLE_SCORE = 1500;
 
 const PLAYER_WIDTH = 36;
 const PLAYER_HEIGHT = 50;
@@ -18,10 +22,41 @@ const DUCK_HEIGHT = 25;
 const DOUBLE_JUMP_FORCE = -11;
 const ADVANCED_PHASE_SCORE = 500; // Score threshold to unlock double jump
 
-// Game state: start | playing | paused | gameover
+// Leaderboard helpers (localStorage)
+function loadLeaderboard() {
+  try {
+    return JSON.parse(localStorage.getItem("neonSprintLeaderboard")) || [];
+  } catch { return []; }
+}
+function saveLeaderboard(board) {
+  try { localStorage.setItem("neonSprintLeaderboard", JSON.stringify(board)); } catch {}
+}
+function isHighScore(s) {
+  const board = loadLeaderboard();
+  return board.length < 5 || s > board[board.length - 1].score;
+}
+function insertScore(initials, s) {
+  const board = loadLeaderboard();
+  board.push({ initials, score: s });
+  board.sort((a, b) => b.score - a.score);
+  saveLeaderboard(board.slice(0, 5));
+}
+function renderLeaderboardHTML(containerId) {
+  const container = document.getElementById(containerId);
+  const board = loadLeaderboard();
+  if (board.length === 0) { container.innerHTML = ""; return; }
+  let html = '<div class="leaderboard-title">TOP RUNNERS</div><table class="leaderboard-table">';
+  board.forEach((entry, i) => {
+    html += `<tr><td class="lb-rank">${i + 1}.</td><td class="lb-initials">${entry.initials}</td><td class="lb-score">${String(entry.score).padStart(6, "0")}</td></tr>`;
+  });
+  html += "</table>";
+  container.innerHTML = html;
+}
+
+// Game state: start | playing | paused | gameover | entering_initials
 let state = "start";
 let score = 0;
-let highScore = 0;
+let highScore = (loadLeaderboard()[0] || {}).score || 0;
 let gameSpeed = INITIAL_SPEED;
 let frameCount = 0;
 let obstacles = [];
@@ -29,6 +64,9 @@ let particles = [];
 let groundOffset = 0;
 let doubleJumpUnlocked = false; // tracks if we've shown the unlock notification
 let unlockFlashTimer = 0;
+let gameOverTime = 0; // timestamp to prevent instant restart
+let difficultyTier = ""; // current difficulty tier label
+let initialsEntry = { chars: [65, 65, 65], pos: 0 }; // for arcade initials input
 
 // City background layers (parallax)
 const buildings = [];
@@ -105,7 +143,38 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (state === "start" || state === "gameover") {
+  // R/Q shortcuts for pause menu
+  if (state === "paused") {
+    if (e.code === "KeyR") { resumeGame(); e.preventDefault(); return; }
+    if (e.code === "KeyQ") { quitGame(); e.preventDefault(); return; }
+  }
+
+  // Initials entry input
+  if (state === "entering_initials") {
+    if (e.code === "ArrowUp") {
+      initialsEntry.chars[initialsEntry.pos] = (initialsEntry.chars[initialsEntry.pos] - 65 + 1) % 26 + 65;
+    } else if (e.code === "ArrowDown") {
+      initialsEntry.chars[initialsEntry.pos] = (initialsEntry.chars[initialsEntry.pos] - 65 + 25) % 26 + 65;
+    } else if (e.code === "ArrowLeft") {
+      initialsEntry.pos = Math.max(0, initialsEntry.pos - 1);
+    } else if (e.code === "ArrowRight") {
+      initialsEntry.pos = Math.min(2, initialsEntry.pos + 1);
+    } else if (e.code === "Enter") {
+      const initials = String.fromCharCode(...initialsEntry.chars);
+      insertScore(initials, Math.floor(score));
+      state = "gameover";
+      gameOverTime = performance.now();
+      showGameOverScreen();
+    }
+    e.preventDefault();
+    return;
+  }
+
+  if (state === "start") {
+    startGame();
+    e.preventDefault();
+  }
+  if (state === "gameover" && performance.now() - gameOverTime > 500) {
     startGame();
     e.preventDefault();
   }
@@ -123,7 +192,11 @@ canvas.addEventListener("touchstart", (e) => {
   const touch = e.touches[0];
   const rect = canvas.getBoundingClientRect();
   const y = touch.clientY - rect.top;
-  if (state === "start" || state === "gameover") {
+  if (state === "start") {
+    startGame();
+    return;
+  }
+  if (state === "gameover" && performance.now() - gameOverTime > 500) {
     startGame();
     return;
   }
@@ -159,6 +232,7 @@ function startGame() {
   player.canDoubleJump = false;
   doubleJumpUnlocked = false;
   unlockFlashTimer = 0;
+  difficultyTier = "";
   generateBuildings();
 
   document.getElementById("start-screen").classList.add("hidden");
@@ -199,6 +273,7 @@ function quitGame() {
   document.getElementById("game-over-screen").classList.add("hidden");
   document.getElementById("start-screen").classList.remove("hidden");
   document.getElementById("score-display").textContent = "SCORE 000000";
+  renderLeaderboardHTML("start-leaderboard");
 }
 
 // Pause menu buttons
@@ -223,8 +298,14 @@ canvas.addEventListener("touchstart", function pauseTouchHandler(e) {
   }
 }, true);
 
+function showGameOverScreen() {
+  document.getElementById("final-score").textContent = "Score: " + Math.floor(score);
+  document.getElementById("high-score").textContent = "Best: " + Math.floor(highScore);
+  renderLeaderboardHTML("game-over-leaderboard");
+  document.getElementById("game-over-screen").classList.remove("hidden");
+}
+
 function gameOver() {
-  state = "gameover";
   if (score > highScore) highScore = score;
 
   // Neon explosion particles
@@ -244,9 +325,15 @@ function gameOver() {
     });
   }
 
-  document.getElementById("final-score").textContent = "Score: " + Math.floor(score);
-  document.getElementById("high-score").textContent = "Best: " + Math.floor(highScore);
-  document.getElementById("game-over-screen").classList.remove("hidden");
+  // Check if score qualifies for leaderboard
+  if (isHighScore(Math.floor(score))) {
+    state = "entering_initials";
+    initialsEntry = { chars: [65, 65, 65], pos: 0 };
+  } else {
+    state = "gameover";
+    gameOverTime = performance.now();
+    showGameOverScreen();
+  }
 }
 
 // Obstacle types - city themed
@@ -362,12 +449,28 @@ function updateObstacles() {
     (obstacles.length === 0 ||
       obstacles[obstacles.length - 1].x < canvas.width - 200 - Math.random() * 150)
   ) {
-    obstacles.push(createObstacle());
+    // Combo obstacles: ground + drone pair at high scores (20% chance)
+    if (score >= COMBO_OBSTACLE_SCORE && Math.random() < 0.2) {
+      // Ground obstacle
+      obstacles.push({ x: canvas.width, y: GROUND_Y - 35, width: 30, height: 35, type: "barrier" });
+      // Drone slightly ahead — forces precise jump timing (can't stay high or low)
+      obstacles.push({
+        x: canvas.width + 120,
+        y: GROUND_Y - PLAYER_HEIGHT - 18,
+        width: 40,
+        height: 20,
+        type: "drone",
+      });
+    } else {
+      obstacles.push(createObstacle());
+    }
     frameCount = 0;
   }
 
   for (let i = obstacles.length - 1; i >= 0; i--) {
-    obstacles[i].x -= gameSpeed;
+    // Fast drones move 1.4x speed after milestone
+    const speedMult = (obstacles[i].type === "drone" && score >= FAST_DRONE_SCORE) ? 1.4 : 1;
+    obstacles[i].x -= gameSpeed * speedMult;
     if (obstacles[i].x + obstacles[i].width < 0) {
       obstacles.splice(i, 1);
     }
@@ -789,6 +892,94 @@ function drawParticles() {
   ctx.globalAlpha = 1;
 }
 
+function drawInitialsEntry() {
+  ctx.save();
+
+  // Dark overlay
+  ctx.fillStyle = "rgba(8, 8, 24, 0.85)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const cx = canvas.width / 2;
+
+  // Title
+  ctx.textAlign = "center";
+  ctx.font = "bold 22px 'Courier New', monospace";
+  ctx.fillStyle = "#ff00ff";
+  ctx.shadowColor = "#ff00ff";
+  ctx.shadowBlur = 15;
+  ctx.fillText("NEW HIGH SCORE!", cx, 80);
+  ctx.shadowBlur = 0;
+
+  // Score
+  ctx.font = "18px 'Courier New', monospace";
+  ctx.fillStyle = "#00ffcc";
+  ctx.fillText(String(Math.floor(score)).padStart(6, "0"), cx, 110);
+
+  // Subtitle
+  ctx.font = "12px 'Courier New', monospace";
+  ctx.fillStyle = "#8888aa";
+  ctx.fillText("ENTER YOUR INITIALS", cx, 140);
+
+  // Letter boxes
+  const boxW = 40;
+  const boxH = 50;
+  const gap = 12;
+  const startX = cx - (boxW * 3 + gap * 2) / 2;
+  const boxY = 155;
+
+  for (let i = 0; i < 3; i++) {
+    const bx = startX + i * (boxW + gap);
+    const isActive = i === initialsEntry.pos;
+
+    // Box background
+    ctx.fillStyle = "#1a1a2e";
+    ctx.fillRect(bx, boxY, boxW, boxH);
+
+    // Box border
+    ctx.strokeStyle = isActive ? "#00ffcc" : "#333355";
+    ctx.lineWidth = isActive ? 2 : 1;
+    ctx.strokeRect(bx, boxY, boxW, boxH);
+
+    // Letter
+    ctx.font = "bold 28px 'Courier New', monospace";
+    ctx.fillStyle = isActive ? "#00ffcc" : "#8888aa";
+    if (isActive) {
+      ctx.shadowColor = "#00ffcc";
+      ctx.shadowBlur = 8;
+    }
+    ctx.fillText(String.fromCharCode(initialsEntry.chars[i]), bx + boxW / 2, boxY + 35);
+    ctx.shadowBlur = 0;
+
+    // Up/down arrows for active position
+    if (isActive) {
+      ctx.fillStyle = "#00ffcc";
+      ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 300) * 0.4;
+      // Up arrow
+      ctx.beginPath();
+      ctx.moveTo(bx + boxW / 2, boxY - 12);
+      ctx.lineTo(bx + boxW / 2 - 6, boxY - 4);
+      ctx.lineTo(bx + boxW / 2 + 6, boxY - 4);
+      ctx.closePath();
+      ctx.fill();
+      // Down arrow
+      ctx.beginPath();
+      ctx.moveTo(bx + boxW / 2, boxY + boxH + 12);
+      ctx.lineTo(bx + boxW / 2 - 6, boxY + boxH + 4);
+      ctx.lineTo(bx + boxW / 2 + 6, boxY + boxH + 4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Instructions
+  ctx.font = "10px 'Courier New', monospace";
+  ctx.fillStyle = "#555566";
+  ctx.fillText("UP/DOWN: Letter  |  LEFT/RIGHT: Move  |  ENTER: Confirm", cx, boxY + boxH + 30);
+
+  ctx.restore();
+}
+
 function drawScanlines() {
   ctx.globalAlpha = 0.03;
   ctx.fillStyle = "#000000";
@@ -814,6 +1005,24 @@ function drawHUD() {
   ctx.fillStyle = "#555566";
   ctx.font = "9px 'Courier New', monospace";
   ctx.fillText("SPD", 14, 28);
+
+  // Difficulty tier label
+  if (difficultyTier) {
+    ctx.save();
+    ctx.font = "bold 9px 'Courier New', monospace";
+    ctx.textAlign = "right";
+    const tierColors = {
+      "DOUBLE JUMP": "#ff00ff",
+      "HIGH SPEED": "#ffaa00",
+      "DANGER ZONE": "#ff4444",
+      "OVERDRIVE": "#ff0066",
+    };
+    ctx.fillStyle = tierColors[difficultyTier] || "#00ffcc";
+    ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 400) * 0.3;
+    ctx.fillText(difficultyTier, canvas.width - 40, 28);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
 
   // Double jump indicator
   if (player.canDoubleJump) {
@@ -867,7 +1076,7 @@ function draw() {
   drawCityLayer(buildings, 0.4, 0.7);
   drawGround();
 
-  if (state === "playing" || state === "gameover" || state === "paused") {
+  if (state === "playing" || state === "gameover" || state === "paused" || state === "entering_initials") {
     for (const obs of obstacles) {
       drawObstacle(obs);
     }
@@ -878,6 +1087,10 @@ function draw() {
 
   drawParticles();
   drawHUD();
+
+  if (state === "entering_initials") {
+    drawInitialsEntry();
+  }
 
   // Double jump unlock notification
   if (unlockFlashTimer > 0) {
@@ -913,7 +1126,23 @@ function update() {
     return;
   }
 
-  gameSpeed = Math.min(MAX_SPEED, INITIAL_SPEED + score * SPEED_INCREMENT);
+  // Progressive speed: steeper ramp at higher scores
+  let speedIncrement = 0.001;
+  if (score >= COMBO_OBSTACLE_SCORE) {
+    speedIncrement = 0.0025;
+    difficultyTier = "OVERDRIVE";
+  } else if (score >= FAST_DRONE_SCORE) {
+    speedIncrement = 0.002;
+    difficultyTier = "DANGER ZONE";
+  } else if (score >= SPEED_TIER_SCORE) {
+    speedIncrement = 0.0015;
+    difficultyTier = "HIGH SPEED";
+  } else if (score >= ADVANCED_PHASE_SCORE) {
+    difficultyTier = "DOUBLE JUMP";
+  } else {
+    difficultyTier = "";
+  }
+  gameSpeed = Math.min(MAX_SPEED, INITIAL_SPEED + score * speedIncrement);
   score += gameSpeed * 0.05;
 
   // Check for double jump unlock
@@ -956,4 +1185,5 @@ function resizeCanvas() {
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
+renderLeaderboardHTML("start-leaderboard");
 gameLoop();
