@@ -9,8 +9,12 @@ const GROUND_Y = 290;
 const GRAVITY = 0.6;
 const JUMP_FORCE = -13;
 const INITIAL_SPEED = 5;
-const MAX_SPEED = 13;
-const SPEED_INCREMENT = 0.001;
+const MAX_SPEED = 14;
+
+// Difficulty milestones
+const SPEED_TIER_SCORE = 750;
+const FAST_DRONE_SCORE = 1000;
+const COMBO_OBSTACLE_SCORE = 1500;
 
 const PLAYER_WIDTH = 36;
 const PLAYER_HEIGHT = 50;
@@ -29,6 +33,8 @@ let particles = [];
 let groundOffset = 0;
 let doubleJumpUnlocked = false; // tracks if we've shown the unlock notification
 let unlockFlashTimer = 0;
+let gameOverTime = 0; // timestamp to prevent instant restart
+let difficultyTier = ""; // current difficulty tier label
 
 // City background layers (parallax)
 const buildings = [];
@@ -105,7 +111,11 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (state === "start" || state === "gameover") {
+  if (state === "start") {
+    startGame();
+    e.preventDefault();
+  }
+  if (state === "gameover" && performance.now() - gameOverTime > 500) {
     startGame();
     e.preventDefault();
   }
@@ -123,7 +133,11 @@ canvas.addEventListener("touchstart", (e) => {
   const touch = e.touches[0];
   const rect = canvas.getBoundingClientRect();
   const y = touch.clientY - rect.top;
-  if (state === "start" || state === "gameover") {
+  if (state === "start") {
+    startGame();
+    return;
+  }
+  if (state === "gameover" && performance.now() - gameOverTime > 500) {
     startGame();
     return;
   }
@@ -159,6 +173,7 @@ function startGame() {
   player.canDoubleJump = false;
   doubleJumpUnlocked = false;
   unlockFlashTimer = 0;
+  difficultyTier = "";
   generateBuildings();
 
   document.getElementById("start-screen").classList.add("hidden");
@@ -225,6 +240,7 @@ canvas.addEventListener("touchstart", function pauseTouchHandler(e) {
 
 function gameOver() {
   state = "gameover";
+  gameOverTime = performance.now();
   if (score > highScore) highScore = score;
 
   // Neon explosion particles
@@ -362,12 +378,28 @@ function updateObstacles() {
     (obstacles.length === 0 ||
       obstacles[obstacles.length - 1].x < canvas.width - 200 - Math.random() * 150)
   ) {
-    obstacles.push(createObstacle());
+    // Combo obstacles: ground + drone pair at high scores (20% chance)
+    if (score >= COMBO_OBSTACLE_SCORE && Math.random() < 0.2) {
+      // Ground obstacle
+      obstacles.push({ x: canvas.width, y: GROUND_Y - 35, width: 30, height: 35, type: "barrier" });
+      // Drone slightly ahead — forces precise jump timing (can't stay high or low)
+      obstacles.push({
+        x: canvas.width + 120,
+        y: GROUND_Y - PLAYER_HEIGHT - 18,
+        width: 40,
+        height: 20,
+        type: "drone",
+      });
+    } else {
+      obstacles.push(createObstacle());
+    }
     frameCount = 0;
   }
 
   for (let i = obstacles.length - 1; i >= 0; i--) {
-    obstacles[i].x -= gameSpeed;
+    // Fast drones move 1.4x speed after milestone
+    const speedMult = (obstacles[i].type === "drone" && score >= FAST_DRONE_SCORE) ? 1.4 : 1;
+    obstacles[i].x -= gameSpeed * speedMult;
     if (obstacles[i].x + obstacles[i].width < 0) {
       obstacles.splice(i, 1);
     }
@@ -815,6 +847,24 @@ function drawHUD() {
   ctx.font = "9px 'Courier New', monospace";
   ctx.fillText("SPD", 14, 28);
 
+  // Difficulty tier label
+  if (difficultyTier) {
+    ctx.save();
+    ctx.font = "bold 9px 'Courier New', monospace";
+    ctx.textAlign = "right";
+    const tierColors = {
+      "DOUBLE JUMP": "#ff00ff",
+      "HIGH SPEED": "#ffaa00",
+      "DANGER ZONE": "#ff4444",
+      "OVERDRIVE": "#ff0066",
+    };
+    ctx.fillStyle = tierColors[difficultyTier] || "#00ffcc";
+    ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 400) * 0.3;
+    ctx.fillText(difficultyTier, canvas.width - 40, 28);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
   // Double jump indicator
   if (player.canDoubleJump) {
     const maxJumps = 2;
@@ -913,7 +963,23 @@ function update() {
     return;
   }
 
-  gameSpeed = Math.min(MAX_SPEED, INITIAL_SPEED + score * SPEED_INCREMENT);
+  // Progressive speed: steeper ramp at higher scores
+  let speedIncrement = 0.001;
+  if (score >= COMBO_OBSTACLE_SCORE) {
+    speedIncrement = 0.0025;
+    difficultyTier = "OVERDRIVE";
+  } else if (score >= FAST_DRONE_SCORE) {
+    speedIncrement = 0.002;
+    difficultyTier = "DANGER ZONE";
+  } else if (score >= SPEED_TIER_SCORE) {
+    speedIncrement = 0.0015;
+    difficultyTier = "HIGH SPEED";
+  } else if (score >= ADVANCED_PHASE_SCORE) {
+    difficultyTier = "DOUBLE JUMP";
+  } else {
+    difficultyTier = "";
+  }
+  gameSpeed = Math.min(MAX_SPEED, INITIAL_SPEED + score * speedIncrement);
   score += gameSpeed * 0.05;
 
   // Check for double jump unlock
