@@ -251,6 +251,14 @@ function gameOver() {
 
 // Obstacle types - city themed
 function createObstacle() {
+  const inAdvancedPhase = score >= ADVANCED_PHASE_SCORE;
+
+  // In advanced phase, 25% chance of firewall (requires double jump)
+  if (inAdvancedPhase && Math.random() < 0.25) {
+    const h = 155 + Math.floor(Math.random() * 15); // 155-170px tall
+    return { x: canvas.width, y: GROUND_Y - h, width: 28, height: h, type: "firewall" };
+  }
+
   const type = Math.random();
   if (type < 0.3) {
     // Traffic barrier
@@ -690,6 +698,45 @@ function drawObstacle(obs) {
     ctx.globalAlpha = 0.6;
     ctx.fillRect(obs.x, obs.y, obs.width, 3);
     ctx.globalAlpha = 1;
+  } else if (obs.type === "firewall") {
+    // Tall energy firewall - requires double jump
+    const pulse = Math.sin(t / 150 + obs.x * 0.1);
+
+    // Base structure (dark pillars on sides)
+    ctx.fillStyle = "#1a0a2e";
+    ctx.fillRect(obs.x, obs.y, 4, obs.height);
+    ctx.fillRect(obs.x + obs.width - 4, obs.y, 4, obs.height);
+
+    // Energy field (animated vertical bars)
+    for (let row = 0; row < obs.height; row += 4) {
+      const wave = Math.sin(t / 200 + row * 0.15) * 0.4;
+      const intensity = 0.4 + wave + pulse * 0.2;
+      ctx.globalAlpha = Math.max(0.1, Math.min(1, intensity));
+      const hue = (row * 2 + t / 10) % 60;
+      ctx.fillStyle = `hsl(${280 + hue}, 100%, ${50 + wave * 20}%)`;
+      ctx.fillRect(obs.x + 4, obs.y + row, obs.width - 8, 3);
+    }
+    ctx.globalAlpha = 1;
+
+    // Bright edge glow
+    ctx.fillStyle = "#ff00ff";
+    ctx.globalAlpha = 0.5 + pulse * 0.3;
+    ctx.fillRect(obs.x + 3, obs.y, 2, obs.height);
+    ctx.fillRect(obs.x + obs.width - 5, obs.y, 2, obs.height);
+    ctx.globalAlpha = 1;
+
+    // Top hazard cap
+    ctx.fillStyle = "#ff00ff";
+    ctx.globalAlpha = 0.7 + pulse * 0.3;
+    ctx.fillRect(obs.x - 2, obs.y - 2, obs.width + 4, 4);
+    ctx.globalAlpha = 1;
+
+    // Ambient glow
+    ctx.globalAlpha = 0.06 + pulse * 0.03;
+    ctx.fillStyle = "#ff00ff";
+    ctx.fillRect(obs.x - 8, obs.y, obs.width + 16, obs.height);
+    ctx.globalAlpha = 1;
+
   } else if (obs.type === "drone") {
     // Drone body
     ctx.fillStyle = "#333344";
