@@ -2,11 +2,28 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <link rel="stylesheet" href="stylesheet.css"
+    <title>Endless Runner</title>
+    <link rel="stylesheet" href="stylesheet.css">
 </head>
-
 <body>
-    <p> Hello World!</p>
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="300"></canvas>
+        <div id="ui-overlay">
+            <div id="score-display">Score: 0</div>
+            <div id="start-screen">
+                <h1>Endless Runner</h1>
+                <p>Press <kbd>Space</kbd> or <kbd>Up</kbd> to Jump</p>
+                <p>Press <kbd>Down</kbd> to Duck</p>
+                <p class="start-prompt">Press any key to start</p>
+            </div>
+            <div id="game-over-screen" class="hidden">
+                <h1>Game Over</h1>
+                <p id="final-score"></p>
+                <p id="high-score"></p>
+                <p class="start-prompt">Press any key to restart</p>
+            </div>
+        </div>
+    </div>
+    <script src="game.js"></script>
 </body>
-
 </html>
