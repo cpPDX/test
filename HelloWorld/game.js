@@ -44,7 +44,7 @@ function insertScore(initials, s) {
 function renderLeaderboardHTML(containerId) {
   const container = document.getElementById(containerId);
   const board = loadLeaderboard();
-  if (board.length === 0) { container.innerHTML = ""; return; }
+  if (board.length === 0) { container.innerHTML = '<div class="leaderboard-title">TOP RUNNERS</div><p class="lb-empty">NO SCORES YET</p>'; return; }
   let html = '<div class="leaderboard-title">TOP RUNNERS</div><table class="leaderboard-table">';
   board.forEach((entry, i) => {
     html += `<tr><td class="lb-rank">${i + 1}.</td><td class="lb-initials">${entry.initials}</td><td class="lb-score">${String(entry.score).padStart(6, "0")}</td></tr>`;
@@ -67,6 +67,7 @@ let unlockFlashTimer = 0;
 let gameOverTime = 0; // timestamp to prevent instant restart
 let difficultyTier = ""; // current difficulty tier label
 let initialsEntry = { chars: [65, 65, 65], pos: 0 }; // for arcade initials input
+let resumeGraceFrames = 0; // brief collision immunity after unpausing
 
 // City background layers (parallax)
 const buildings = [];
@@ -145,8 +146,8 @@ document.addEventListener("keydown", (e) => {
 
   // R/Q shortcuts for pause menu
   if (state === "paused") {
-    if (e.code === "KeyR") { resumeGame(); e.preventDefault(); return; }
-    if (e.code === "KeyQ") { quitGame(); e.preventDefault(); return; }
+    if (e.code === "KeyR" || e.key === "r" || e.key === "R") { resumeGame(); e.preventDefault(); return; }
+    if (e.code === "KeyQ" || e.key === "q" || e.key === "Q") { quitGame(); e.preventDefault(); return; }
   }
 
   // Initials entry input
@@ -246,11 +247,13 @@ function pauseGame() {
   document.getElementById("pause-score").textContent =
     "Score: " + Math.floor(score);
   document.getElementById("pause-screen").classList.remove("hidden");
+  document.activeElement?.blur(); // prevent buttons from capturing keyboard input
 }
 
 function resumeGame() {
   if (state !== "paused") return;
   state = "playing";
+  resumeGraceFrames = 10; // ~166ms collision immunity so obstacles near player don't instant-kill
   document.getElementById("pause-screen").classList.add("hidden");
 }
 
@@ -478,6 +481,7 @@ function updateObstacles() {
 }
 
 function checkCollisions() {
+  if (resumeGraceFrames > 0) { resumeGraceFrames--; return; }
   const px = player.x + 5;
   const py = player.y + 5;
   const pw = player.width - 10;

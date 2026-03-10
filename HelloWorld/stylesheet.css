@@ -209,6 +209,13 @@ kbd {
     text-shadow: 0 0 6px rgba(255, 0, 255, 0.3);
 }
 
+.lb-empty {
+    color: #555566;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-align: center;
+}
+
 .hidden {
     display: none !important;
 }
