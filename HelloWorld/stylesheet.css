@@ -5,26 +5,30 @@
 }
 
 body {
-    background: #1a1a2e;
+    background: #0a0a12;
     display: flex;
     justify-content: center;
     align-items: center;
     min-height: 100vh;
-    font-family: 'Segoe UI', Arial, sans-serif;
+    font-family: 'Courier New', 'Lucida Console', monospace;
     color: #e0e0e0;
+    overflow: hidden;
 }
 
 #game-container {
     position: relative;
-    border: 3px solid #16213e;
-    border-radius: 8px;
+    border: 2px solid #ff00ff44;
+    border-radius: 4px;
     overflow: hidden;
-    box-shadow: 0 0 30px rgba(0, 200, 255, 0.15);
+    box-shadow:
+        0 0 40px rgba(255, 0, 255, 0.15),
+        0 0 80px rgba(0, 255, 255, 0.08),
+        inset 0 0 30px rgba(0, 0, 0, 0.3);
 }
 
 canvas {
     display: block;
-    background: #0f3460;
+    background: #080818;
 }
 
 #ui-overlay {
@@ -40,10 +44,14 @@ canvas {
     position: absolute;
     top: 12px;
     right: 16px;
-    font-size: 20px;
+    font-size: 18px;
     font-weight: bold;
-    color: #e0e0e0;
-    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.5);
+    color: #00ffcc;
+    text-shadow:
+        0 0 8px rgba(0, 255, 204, 0.6),
+        0 0 20px rgba(0, 255, 204, 0.3);
+    letter-spacing: 2px;
+    text-transform: uppercase;
 }
 
 #start-screen,
@@ -53,44 +61,54 @@ canvas {
     align-items: center;
     justify-content: center;
     height: 100%;
-    background: rgba(15, 52, 96, 0.85);
+    background: rgba(8, 8, 24, 0.92);
+    backdrop-filter: blur(4px);
 }
 
 #start-screen h1,
 #game-over-screen h1 {
-    font-size: 42px;
+    font-size: 44px;
     margin-bottom: 16px;
-    color: #00c8ff;
-    text-shadow: 0 0 10px rgba(0, 200, 255, 0.5);
+    color: #ff00ff;
+    text-shadow:
+        0 0 10px rgba(255, 0, 255, 0.7),
+        0 0 30px rgba(255, 0, 255, 0.4),
+        0 0 60px rgba(255, 0, 255, 0.2);
+    letter-spacing: 6px;
+    text-transform: uppercase;
 }
 
 #start-screen p,
 #game-over-screen p {
-    font-size: 16px;
+    font-size: 14px;
     margin: 4px 0;
-    color: #c0c0c0;
+    color: #8888aa;
+    letter-spacing: 1px;
 }
 
 kbd {
-    background: #16213e;
-    border: 1px solid #0f3460;
-    border-radius: 4px;
+    background: #1a1a2e;
+    border: 1px solid #ff00ff44;
+    border-radius: 3px;
     padding: 2px 8px;
     font-family: inherit;
-    font-size: 14px;
-    color: #00c8ff;
+    font-size: 13px;
+    color: #00ffcc;
+    box-shadow: 0 0 6px rgba(0, 255, 204, 0.2);
 }
 
 .start-prompt {
     margin-top: 20px !important;
-    font-size: 18px !important;
-    color: #00c8ff !important;
+    font-size: 16px !important;
+    color: #ff00ff !important;
     animation: pulse 1.5s ease-in-out infinite;
+    letter-spacing: 3px;
+    text-transform: uppercase;
 }
 
 @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    0%, 100% { opacity: 1; text-shadow: 0 0 10px rgba(255, 0, 255, 0.5); }
+    50% { opacity: 0.3; text-shadow: none; }
 }
 
 .hidden {
