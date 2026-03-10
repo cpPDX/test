@@ -21,6 +21,16 @@ const PLAYER_HEIGHT = 50;
 const DUCK_HEIGHT = 25;
 const DOUBLE_JUMP_FORCE = -11;
 const ADVANCED_PHASE_SCORE = 500; // Score threshold to unlock double jump
+const TUNNEL_SCORE = 2000;        // Score to start spawning underground tunnels
+const JETPACK_SCORE = 3000;       // Score to unlock jetpack hover
+
+// Underground tunnel constants
+const UNDERGROUND_Y = 340;        // Ground level inside tunnel (50px below GROUND_Y)
+
+// Jetpack constants
+const JETPACK_MAX_FUEL = 100;
+const JETPACK_BURN_RATE = 1.2;    // per frame (~83 frames = ~1.4 sec)
+const JETPACK_RECHARGE_RATE = 0.8; // per frame on ground
 
 // Leaderboard helpers (localStorage)
 function loadLeaderboard() {
@@ -68,6 +78,17 @@ let gameOverTime = 0; // timestamp to prevent instant restart
 let difficultyTier = ""; // current difficulty tier label
 let initialsEntry = { chars: [65, 65, 65], pos: 0 }; // for arcade initials input
 let resumeGraceFrames = 0; // brief collision immunity after unpausing
+
+// Jetpack state
+let jetpackUnlocked = false;
+let jetpackFuel = JETPACK_MAX_FUEL;
+let jetpackActive = false;
+let jetpackFlashTimer = 0;
+
+// Underground tunnel state
+let tunnel = null;      // { x, entranceWidth, bodyWidth, exitWidth }
+let playerUnderground = false; // is the player currently below GROUND_Y?
+let tunnelObstacleTimer = 0;
 
 // City background layers (parallax)
 const buildings = [];
@@ -233,6 +254,13 @@ function startGame() {
   player.canDoubleJump = false;
   doubleJumpUnlocked = false;
   unlockFlashTimer = 0;
+  jetpackUnlocked = false;
+  jetpackFuel = JETPACK_MAX_FUEL;
+  jetpackActive = false;
+  jetpackFlashTimer = 0;
+  tunnel = null;
+  playerUnderground = false;
+  tunnelObstacleTimer = 0;
   difficultyTier = "";
   generateBuildings();
 
@@ -270,6 +298,13 @@ function quitGame() {
   player.ducking = false;
   player.jumpsUsed = 0;
   player.canDoubleJump = false;
+  tunnel = null;
+  playerUnderground = false;
+  tunnelObstacleTimer = 0;
+  jetpackUnlocked = false;
+  jetpackFuel = JETPACK_MAX_FUEL;
+  jetpackActive = false;
+  jetpackFlashTimer = 0;
   generateBuildings();
 
   document.getElementById("pause-screen").classList.add("hidden");
@@ -371,6 +406,26 @@ function createObstacle() {
   }
 }
 
+// Returns the effective ground Y at a given x position (accounts for tunnel)
+function getGroundAt(x) {
+  if (!tunnel) return GROUND_Y;
+  const t = tunnel;
+  const entrEnd = t.x + t.entranceWidth;
+  const bodyEnd = entrEnd + t.bodyWidth;
+  const exitEnd = bodyEnd + t.exitWidth;
+
+  if (x < t.x || x > exitEnd) return GROUND_Y;
+  if (x < entrEnd) {
+    // Entrance ramp: interpolate from GROUND_Y down to UNDERGROUND_Y
+    const pct = (x - t.x) / t.entranceWidth;
+    return GROUND_Y + (UNDERGROUND_Y - GROUND_Y) * pct;
+  }
+  if (x < bodyEnd) return UNDERGROUND_Y;
+  // Exit ramp: interpolate from UNDERGROUND_Y back up to GROUND_Y
+  const pct = (x - bodyEnd) / t.exitWidth;
+  return UNDERGROUND_Y + (GROUND_Y - UNDERGROUND_Y) * pct;
+}
+
 function updatePlayer() {
   const jumpKey = justPressed["Space"] || justPressed["ArrowUp"] || justPressed["KeyW"];
   const wantDuck = keys["ArrowDown"] || keys["KeyS"];
@@ -387,7 +442,8 @@ function updatePlayer() {
 
     // Jump particles — different color for double jump
     const pColor = isDoubleJump ? "#ff00ff" : "#00ffcc";
-    const pY = isDoubleJump ? player.y + player.height : GROUND_Y;
+    const currentGround = getGroundAt(player.x + player.width / 2);
+    const pY = isDoubleJump ? player.y + player.height : currentGround;
     const count = isDoubleJump ? 10 : 6;
     for (let i = 0; i < count; i++) {
       particles.push({
@@ -407,27 +463,67 @@ function updatePlayer() {
   justPressed["ArrowUp"] = false;
   justPressed["KeyW"] = false;
 
+  const groundHere = getGroundAt(player.x + player.width / 2);
+
   if (wantDuck && !player.jumping) {
     player.ducking = true;
     player.height = DUCK_HEIGHT;
-    player.y = GROUND_Y - DUCK_HEIGHT;
+    player.y = groundHere - DUCK_HEIGHT;
   } else {
     player.ducking = false;
     if (!player.jumping) {
       player.height = PLAYER_HEIGHT;
-      player.y = GROUND_Y - PLAYER_HEIGHT;
+      player.y = groundHere - PLAYER_HEIGHT;
     }
   }
 
   player.vy += GRAVITY;
   player.y += player.vy;
 
-  if (player.y >= GROUND_Y - player.height) {
+  // Jetpack hover: hold Down/S while airborne to slow descent
+  if (jetpackUnlocked && player.jumping && wantDuck && jetpackFuel > 0) {
+    jetpackActive = true;
+    player.vy *= 0.3;
+    player.vy = Math.max(player.vy, -2);
+    jetpackFuel -= JETPACK_BURN_RATE;
+    if (jetpackFuel < 0) jetpackFuel = 0;
+    // Flame particles from feet
+    if (Math.random() < 0.7) {
+      particles.push({
+        x: player.x + player.width / 2 + (Math.random() - 0.5) * 12,
+        y: player.y + player.height,
+        vx: (Math.random() - 0.5) * 1.5,
+        vy: 2 + Math.random() * 3,
+        life: 0.5,
+        size: 2 + Math.random() * 2,
+        color: ["#ff6600", "#ffaa00", "#00ffcc"][Math.floor(Math.random() * 3)],
+      });
+    }
+  } else {
+    jetpackActive = false;
+  }
+
+  // Recharge jetpack on ground
+  if (!player.jumping && jetpackUnlocked) {
+    jetpackFuel = Math.min(JETPACK_MAX_FUEL, jetpackFuel + JETPACK_RECHARGE_RATE);
+  }
+
+  // Underground: ceiling check — prevent jumping above GROUND_Y when inside tunnel
+  if (playerUnderground && player.y < GROUND_Y - player.height) {
     player.y = GROUND_Y - player.height;
+    player.vy = 0;
+  }
+
+  // Ground landing
+  if (player.y >= groundHere - player.height) {
+    player.y = groundHere - player.height;
     player.vy = 0;
     player.jumping = false;
     player.jumpsUsed = 0;
   }
+
+  // Track if player is underground
+  playerUnderground = player.y + player.height > GROUND_Y + 5;
 
   // Running trail
   player.trailTimer++;
@@ -444,34 +540,91 @@ function updatePlayer() {
   }
 }
 
+function updateTunnel() {
+  if (!tunnel) {
+    // Spawn check
+    if (score >= TUNNEL_SCORE && Math.random() < 0.002) {
+      tunnel = {
+        x: canvas.width + 100,
+        entranceWidth: 60,
+        bodyWidth: 500 + Math.random() * 200,
+        exitWidth: 60,
+      };
+    }
+    return;
+  }
+
+  tunnel.x -= gameSpeed;
+
+  // Remove when fully off screen
+  const totalWidth = tunnel.entranceWidth + tunnel.bodyWidth + tunnel.exitWidth;
+  if (tunnel.x + totalWidth < -50) {
+    tunnel = null;
+    playerUnderground = false;
+  }
+}
+
+// Create an underground-specific obstacle
+function createUndergroundObstacle() {
+  const type = Math.random();
+  if (type < 0.5) {
+    // Pipe at head height — duck under
+    return {
+      x: canvas.width,
+      y: UNDERGROUND_Y - PLAYER_HEIGHT - 10,
+      width: 40,
+      height: 16,
+      type: "pipe",
+    };
+  } else {
+    // Electrified puddle — small, jump over
+    return {
+      x: canvas.width,
+      y: UNDERGROUND_Y - 12,
+      width: 35,
+      height: 12,
+      type: "puddle_zap",
+    };
+  }
+}
+
 function updateObstacles() {
   frameCount++;
   const minGap = Math.max(55, 100 - gameSpeed * 3);
-  if (
+
+  if (playerUnderground) {
+    // Underground obstacle spawning
+    tunnelObstacleTimer++;
+    if (tunnelObstacleTimer > minGap + 20) {
+      obstacles.push(createUndergroundObstacle());
+      tunnelObstacleTimer = 0;
+    }
+  } else if (
     frameCount > minGap &&
     (obstacles.length === 0 ||
       obstacles[obstacles.length - 1].x < canvas.width - 200 - Math.random() * 150)
   ) {
-    // Combo obstacles: ground + drone pair at high scores (20% chance)
-    if (score >= COMBO_OBSTACLE_SCORE && Math.random() < 0.2) {
-      // Ground obstacle
-      obstacles.push({ x: canvas.width, y: GROUND_Y - 35, width: 30, height: 35, type: "barrier" });
-      // Drone slightly ahead — forces precise jump timing (can't stay high or low)
-      obstacles.push({
-        x: canvas.width + 120,
-        y: GROUND_Y - PLAYER_HEIGHT - 18,
-        width: 40,
-        height: 20,
-        type: "drone",
-      });
-    } else {
-      obstacles.push(createObstacle());
+    // Normal surface obstacle spawning (skip if tunnel entrance is on screen)
+    const tunnelOnScreen = tunnel && tunnel.x < canvas.width && tunnel.x > -100;
+    if (!tunnelOnScreen) {
+      // Combo obstacles: ground + drone pair at high scores (20% chance)
+      if (score >= COMBO_OBSTACLE_SCORE && Math.random() < 0.2) {
+        obstacles.push({ x: canvas.width, y: GROUND_Y - 35, width: 30, height: 35, type: "barrier" });
+        obstacles.push({
+          x: canvas.width + 120,
+          y: GROUND_Y - PLAYER_HEIGHT - 18,
+          width: 40,
+          height: 20,
+          type: "drone",
+        });
+      } else {
+        obstacles.push(createObstacle());
+      }
     }
     frameCount = 0;
   }
 
   for (let i = obstacles.length - 1; i >= 0; i--) {
-    // Fast drones move 1.4x speed after milestone
     const speedMult = (obstacles[i].type === "drone" && score >= FAST_DRONE_SCORE) ? 1.4 : 1;
     obstacles[i].x -= gameSpeed * speedMult;
     if (obstacles[i].x + obstacles[i].width < 0) {
@@ -488,6 +641,11 @@ function checkCollisions() {
   const ph = player.height - 10;
 
   for (const obs of obstacles) {
+    // Skip surface obstacles when player is underground, and vice versa
+    const isUndergroundObs = obs.type === "pipe" || obs.type === "puddle_zap";
+    if (playerUnderground && !isUndergroundObs) continue;
+    if (!playerUnderground && isUndergroundObs) continue;
+
     const ox = obs.x + 3;
     const oy = obs.y + 3;
     const ow = obs.width - 6;
@@ -620,15 +778,27 @@ function drawGround() {
   ctx.fillStyle = "#151525";
   ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
 
-  // Neon road line
+  // Neon road line (break at tunnel entrance/exit)
   const t = Date.now() / 1000;
   ctx.strokeStyle = "#ff00ff";
   ctx.lineWidth = 2;
   ctx.globalAlpha = 0.6 + Math.sin(t * 3) * 0.2;
-  ctx.beginPath();
-  ctx.moveTo(0, GROUND_Y);
-  ctx.lineTo(canvas.width, GROUND_Y);
-  ctx.stroke();
+  if (tunnel) {
+    const tEnd = tunnel.x + tunnel.entranceWidth + tunnel.bodyWidth + tunnel.exitWidth;
+    ctx.beginPath();
+    ctx.moveTo(0, GROUND_Y);
+    ctx.lineTo(Math.max(0, tunnel.x), GROUND_Y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(Math.min(canvas.width, tEnd), GROUND_Y);
+    ctx.lineTo(canvas.width, GROUND_Y);
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(0, GROUND_Y);
+    ctx.lineTo(canvas.width, GROUND_Y);
+    ctx.stroke();
+  }
   ctx.globalAlpha = 1;
 
   // Glow under the road line
@@ -670,9 +840,10 @@ function drawPlayer() {
   const t = Date.now();
 
   // Glow effect under player
+  const playerGround = getGroundAt(px + player.width / 2);
   ctx.globalAlpha = 0.15;
   ctx.fillStyle = "#00ffcc";
-  ctx.fillRect(px - 5, GROUND_Y - 2, player.width + 10, 4);
+  ctx.fillRect(px - 5, playerGround - 2, player.width + 10, 4);
   ctx.globalAlpha = 1;
 
   if (player.ducking) {
@@ -876,7 +1047,138 @@ function drawObstacle(obs) {
     ctx.fillStyle = "#ff0044";
     ctx.fillRect(obs.x + 5, obs.y - 4, obs.width - 10, obs.height + 8);
     ctx.globalAlpha = 1;
+  } else if (obs.type === "pipe") {
+    // Underground pipe — horizontal, industrial
+    ctx.fillStyle = "#2a3a2a";
+    ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+    ctx.fillStyle = "#3a5a3a";
+    ctx.fillRect(obs.x + 2, obs.y + 2, obs.width - 4, obs.height - 4);
+    // Rust streaks
+    ctx.fillStyle = "#664422";
+    ctx.globalAlpha = 0.4;
+    ctx.fillRect(obs.x + 8, obs.y + obs.height - 3, 12, 3);
+    ctx.globalAlpha = 1;
+    // Neon band
+    ctx.fillStyle = "#00ff66";
+    ctx.globalAlpha = 0.5 + Math.sin(t / 300 + obs.x) * 0.3;
+    ctx.fillRect(obs.x, obs.y + obs.height / 2 - 1, obs.width, 2);
+    ctx.globalAlpha = 1;
+  } else if (obs.type === "puddle_zap") {
+    // Electrified puddle on the ground
+    const zap = Math.sin(t / 100 + obs.x * 0.3);
+    ctx.fillStyle = "#002211";
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(obs.x, obs.y + obs.height - 4, obs.width, 4);
+    ctx.globalAlpha = 1;
+    // Electric arcs
+    ctx.strokeStyle = "#00ff88";
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.6 + zap * 0.4;
+    for (let i = 0; i < 3; i++) {
+      const arcX = obs.x + 5 + i * 10;
+      const arcH = 4 + Math.sin(t / 80 + i * 2) * 3;
+      ctx.beginPath();
+      ctx.moveTo(arcX, obs.y + obs.height - 4);
+      ctx.lineTo(arcX + 3, obs.y + obs.height - 4 - arcH);
+      ctx.lineTo(arcX + 6, obs.y + obs.height - 4);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    // Green glow
+    ctx.fillStyle = "#00ff88";
+    ctx.globalAlpha = 0.08 + zap * 0.04;
+    ctx.fillRect(obs.x - 4, obs.y - 8, obs.width + 8, obs.height + 12);
+    ctx.globalAlpha = 1;
   }
+
+  ctx.restore();
+}
+
+function drawTunnel() {
+  if (!tunnel) return;
+  ctx.save();
+  const t_now = Date.now();
+  const ent = tunnel.x;
+  const entEnd = ent + tunnel.entranceWidth;
+  const bodyEnd = entEnd + tunnel.bodyWidth;
+  const exitEnd = bodyEnd + tunnel.exitWidth;
+
+  // Underground pit background (dark)
+  ctx.fillStyle = "#060612";
+  ctx.beginPath();
+  ctx.moveTo(ent, GROUND_Y);
+  ctx.lineTo(entEnd, UNDERGROUND_Y);
+  ctx.lineTo(bodyEnd, UNDERGROUND_Y);
+  ctx.lineTo(exitEnd, GROUND_Y);
+  ctx.closePath();
+  ctx.fill();
+
+  // Underground ground line (toxic green glow)
+  ctx.strokeStyle = "#00ff66";
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = 0.5 + Math.sin(t_now / 400) * 0.2;
+  ctx.beginPath();
+  ctx.moveTo(entEnd, UNDERGROUND_Y);
+  ctx.lineTo(bodyEnd, UNDERGROUND_Y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Glow under the underground ground line
+  const ugGlow = ctx.createLinearGradient(0, UNDERGROUND_Y, 0, UNDERGROUND_Y + 6);
+  ugGlow.addColorStop(0, "rgba(0, 255, 102, 0.15)");
+  ugGlow.addColorStop(1, "rgba(0, 255, 102, 0)");
+  ctx.fillStyle = ugGlow;
+  ctx.fillRect(entEnd, UNDERGROUND_Y, bodyEnd - entEnd, 6);
+
+  // Ceiling at GROUND_Y with dripping pipes
+  ctx.strokeStyle = "#333355";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(entEnd, GROUND_Y);
+  ctx.lineTo(bodyEnd, GROUND_Y);
+  ctx.stroke();
+
+  // Pipe details on ceiling
+  for (let px = entEnd + 30; px < bodyEnd - 30; px += 60) {
+    // Vertical pipe drip
+    ctx.fillStyle = "#224433";
+    ctx.fillRect(px, GROUND_Y, 4, 15);
+    // Drip glow
+    const drip = (t_now / 500 + px) % 30;
+    if (drip < 15) {
+      ctx.fillStyle = "#00ff66";
+      ctx.globalAlpha = 0.4;
+      ctx.fillRect(px + 1, GROUND_Y + 15 + drip, 2, 3);
+      ctx.globalAlpha = 1;
+    }
+    // Horizontal conduit
+    ctx.fillStyle = "#1a2a1a";
+    ctx.fillRect(px - 20, GROUND_Y + 2, 44, 3);
+  }
+
+  // Entrance ramp edges
+  ctx.strokeStyle = "#ff00ff";
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(ent, GROUND_Y);
+  ctx.lineTo(entEnd, UNDERGROUND_Y);
+  ctx.stroke();
+  // Exit ramp edges
+  ctx.beginPath();
+  ctx.moveTo(bodyEnd, UNDERGROUND_Y);
+  ctx.lineTo(exitEnd, GROUND_Y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // "DANGER" warning text at entrance
+  ctx.font = "bold 8px 'Courier New', monospace";
+  ctx.fillStyle = "#ff6600";
+  ctx.globalAlpha = 0.5 + Math.sin(t_now / 300) * 0.3;
+  ctx.textAlign = "center";
+  ctx.fillText("DANGER", ent + tunnel.entranceWidth / 2, GROUND_Y - 4);
+  ctx.textAlign = "left";
+  ctx.globalAlpha = 1;
 
   ctx.restore();
 }
@@ -1020,6 +1322,9 @@ function drawHUD() {
       "HIGH SPEED": "#ffaa00",
       "DANGER ZONE": "#ff4444",
       "OVERDRIVE": "#ff0066",
+      "TUNNELS": "#00ff66",
+      "UNDERGROUND": "#00ff66",
+      "JETPACK": "#ff6600",
     };
     ctx.fillStyle = tierColors[difficultyTier] || "#00ffcc";
     ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 400) * 0.3;
@@ -1064,6 +1369,21 @@ function drawHUD() {
     ctx.globalAlpha = 1;
   }
 
+  // Jetpack fuel meter
+  if (jetpackUnlocked) {
+    const fuelPct = jetpackFuel / JETPACK_MAX_FUEL;
+    const fuelY = player.canDoubleJump ? 46 : 34;
+    ctx.fillStyle = "#222233";
+    ctx.fillRect(12, fuelY, 40, 5);
+    ctx.fillStyle = fuelPct > 0.3 ? "#ff6600" : "#ff2200";
+    ctx.globalAlpha = 0.8;
+    ctx.fillRect(12, fuelY, 40 * fuelPct, 5);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#555566";
+    ctx.font = "8px 'Courier New', monospace";
+    ctx.fillText("JET", 14, fuelY + 12);
+  }
+
   // Pause icon (tap target for mobile)
   ctx.fillStyle = "#555566";
   ctx.globalAlpha = 0.5;
@@ -1079,6 +1399,15 @@ function draw() {
   drawCityLayer(farBuildings, 0.15, 0.5);
   drawCityLayer(buildings, 0.4, 0.7);
   drawGround();
+  drawTunnel();
+
+  // Darken sky when underground
+  if (playerUnderground) {
+    ctx.save();
+    ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.fillRect(0, 0, canvas.width, GROUND_Y);
+    ctx.restore();
+  }
 
   if (state === "playing" || state === "gameover" || state === "paused" || state === "entering_initials") {
     for (const obs of obstacles) {
@@ -1087,6 +1416,15 @@ function draw() {
   }
   if (state === "playing" || state === "paused") {
     drawPlayer();
+    // Draw jetpack flame glow on player when active
+    if (jetpackActive) {
+      ctx.save();
+      ctx.fillStyle = "#ff6600";
+      ctx.globalAlpha = 0.3 + Math.sin(Date.now() / 50) * 0.15;
+      ctx.fillRect(player.x + 4, player.y + player.height - 2, player.width - 8, 8);
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
   }
 
   drawParticles();
@@ -1096,25 +1434,39 @@ function draw() {
     drawInitialsEntry();
   }
 
-  // Double jump unlock notification
+  // Unlock notifications
   if (unlockFlashTimer > 0) {
     const alpha = Math.min(1, unlockFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.font = "bold 20px 'Courier New', monospace";
     ctx.textAlign = "center";
-
-    // Glow background
     ctx.fillStyle = "#ff00ff";
     ctx.globalAlpha = alpha * 0.15;
     ctx.fillRect(canvas.width / 2 - 140, 60, 280, 35);
-
-    // Text
     ctx.globalAlpha = alpha;
     ctx.fillStyle = "#ff00ff";
     ctx.shadowColor = "#ff00ff";
     ctx.shadowBlur = 15;
     ctx.fillText("DOUBLE JUMP UNLOCKED", canvas.width / 2, 84);
+    ctx.shadowBlur = 0;
+    ctx.textAlign = "left";
+    ctx.restore();
+  }
+
+  if (jetpackFlashTimer > 0) {
+    const alpha = Math.min(1, jetpackFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
+    ctx.save();
+    ctx.font = "bold 20px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ff6600";
+    ctx.globalAlpha = alpha * 0.15;
+    ctx.fillRect(canvas.width / 2 - 130, 60, 260, 35);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "#ff6600";
+    ctx.shadowColor = "#ff6600";
+    ctx.shadowBlur = 15;
+    ctx.fillText("JETPACK UNLOCKED", canvas.width / 2, 84);
     ctx.shadowBlur = 0;
     ctx.textAlign = "left";
     ctx.restore();
@@ -1132,7 +1484,13 @@ function update() {
 
   // Progressive speed: steeper ramp at higher scores
   let speedIncrement = 0.001;
-  if (score >= COMBO_OBSTACLE_SCORE) {
+  if (score >= JETPACK_SCORE) {
+    speedIncrement = 0.003;
+    difficultyTier = playerUnderground ? "UNDERGROUND" : "JETPACK";
+  } else if (score >= TUNNEL_SCORE) {
+    speedIncrement = 0.0025;
+    difficultyTier = playerUnderground ? "UNDERGROUND" : "TUNNELS";
+  } else if (score >= COMBO_OBSTACLE_SCORE) {
     speedIncrement = 0.0025;
     difficultyTier = "OVERDRIVE";
   } else if (score >= FAST_DRONE_SCORE) {
@@ -1152,11 +1510,19 @@ function update() {
   // Check for double jump unlock
   if (!doubleJumpUnlocked && score >= ADVANCED_PHASE_SCORE) {
     doubleJumpUnlocked = true;
-    unlockFlashTimer = 180; // ~3 seconds at 60fps
+    unlockFlashTimer = 180;
   }
   if (unlockFlashTimer > 0) unlockFlashTimer--;
 
+  // Check for jetpack unlock
+  if (!jetpackUnlocked && score >= JETPACK_SCORE) {
+    jetpackUnlocked = true;
+    jetpackFlashTimer = 180;
+  }
+  if (jetpackFlashTimer > 0) jetpackFlashTimer--;
+
   updatePlayer();
+  updateTunnel();
   updateObstacles();
   checkCollisions();
   updateParticles();
