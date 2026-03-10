@@ -1,0 +1,12 @@
+{
+  "name": "hello-world-app",
+  "version": "1.0.0",
+  "description": "A simple Hello World web application",
+  "scripts": {
+    "lint": "htmlhint 'HelloWorld/**/*.html'",
+    "test": "node test/validate.js"
+  },
+  "devDependencies": {
+    "htmlhint": "^1.1.4"
+  }
+}
