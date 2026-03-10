@@ -16,7 +16,7 @@ const PLAYER_WIDTH = 36;
 const PLAYER_HEIGHT = 50;
 const DUCK_HEIGHT = 25;
 
-// Game state
+// Game state: start | playing | paused | gameover
 let state = "start";
 let score = 0;
 let highScore = 0;
@@ -86,6 +86,17 @@ const keys = {};
 
 document.addEventListener("keydown", (e) => {
   keys[e.code] = true;
+
+  if (e.code === "Escape") {
+    if (state === "playing") {
+      pauseGame();
+    } else if (state === "paused") {
+      resumeGame();
+    }
+    e.preventDefault();
+    return;
+  }
+
   if (state === "start" || state === "gameover") {
     startGame();
     e.preventDefault();
@@ -104,10 +115,12 @@ canvas.addEventListener("touchstart", (e) => {
   const touch = e.touches[0];
   const rect = canvas.getBoundingClientRect();
   const y = touch.clientY - rect.top;
-  if (state !== "playing") {
+  if (state === "start" || state === "gameover") {
     startGame();
     return;
   }
+  if (state === "paused") return;
+  if (state !== "playing") return;
   if (y < canvas.height / 2) {
     keys["ArrowUp"] = true;
   } else {
@@ -137,7 +150,63 @@ function startGame() {
 
   document.getElementById("start-screen").classList.add("hidden");
   document.getElementById("game-over-screen").classList.add("hidden");
+  document.getElementById("pause-screen").classList.add("hidden");
 }
+
+function pauseGame() {
+  if (state !== "playing") return;
+  state = "paused";
+  document.getElementById("pause-score").textContent =
+    "Score: " + Math.floor(score);
+  document.getElementById("pause-screen").classList.remove("hidden");
+}
+
+function resumeGame() {
+  if (state !== "paused") return;
+  state = "playing";
+  document.getElementById("pause-screen").classList.add("hidden");
+}
+
+function quitGame() {
+  state = "start";
+  score = 0;
+  gameSpeed = INITIAL_SPEED;
+  obstacles = [];
+  particles = [];
+  player.y = GROUND_Y - PLAYER_HEIGHT;
+  player.height = PLAYER_HEIGHT;
+  player.vy = 0;
+  player.jumping = false;
+  player.ducking = false;
+  generateBuildings();
+
+  document.getElementById("pause-screen").classList.add("hidden");
+  document.getElementById("game-over-screen").classList.add("hidden");
+  document.getElementById("start-screen").classList.remove("hidden");
+  document.getElementById("score-display").textContent = "SCORE 000000";
+}
+
+// Pause menu buttons
+document.getElementById("resume-btn").addEventListener("click", resumeGame);
+document.getElementById("quit-btn").addEventListener("click", quitGame);
+
+// Mobile pause button (double-tap detection via dedicated area handled by Esc key)
+// For mobile: add a pause touch zone (top-left corner tap)
+canvas.addEventListener("touchstart", function pauseTouchHandler(e) {
+  const touch = e.touches[0];
+  const rect = canvas.getBoundingClientRect();
+  const x = touch.clientX - rect.left;
+  const y = touch.clientY - rect.top;
+  // Tap top-right corner (near pause icon) or top-left (near SPD) to toggle pause
+  const relX = x / rect.width;
+  if ((relX > 0.85 && y < 35) || (x < 80 && y < 35)) {
+    if (state === "playing") {
+      pauseGame();
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+}, true);
 
 function gameOver() {
   state = "gameover";
@@ -667,6 +736,13 @@ function drawHUD() {
   ctx.fillStyle = "#555566";
   ctx.font = "9px 'Courier New', monospace";
   ctx.fillText("SPD", 14, 28);
+
+  // Pause icon (tap target for mobile)
+  ctx.fillStyle = "#555566";
+  ctx.globalAlpha = 0.5;
+  ctx.fillRect(canvas.width - 30, 12, 4, 12);
+  ctx.fillRect(canvas.width - 22, 12, 4, 12);
+  ctx.globalAlpha = 1;
 }
 
 function draw() {
@@ -677,12 +753,12 @@ function draw() {
   drawCityLayer(buildings, 0.4, 0.7);
   drawGround();
 
-  if (state === "playing" || state === "gameover") {
+  if (state === "playing" || state === "gameover" || state === "paused") {
     for (const obs of obstacles) {
       drawObstacle(obs);
     }
   }
-  if (state === "playing") {
+  if (state === "playing" || state === "paused") {
     drawPlayer();
   }
 
@@ -692,6 +768,7 @@ function draw() {
 }
 
 function update() {
+  if (state === "paused") return;
   if (state !== "playing") {
     updateParticles();
     return;
@@ -714,5 +791,23 @@ function gameLoop() {
   draw();
   requestAnimationFrame(gameLoop);
 }
+
+// Responsive scaling
+function resizeCanvas() {
+  const maxW = window.innerWidth;
+  const maxH = window.innerHeight;
+  const ratio = canvas.width / canvas.height;
+  let displayW = maxW;
+  let displayH = maxW / ratio;
+  if (displayH > maxH) {
+    displayH = maxH;
+    displayW = maxH * ratio;
+  }
+  canvas.style.width = displayW + "px";
+  canvas.style.height = displayH + "px";
+}
+
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
 
 gameLoop();
