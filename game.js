@@ -375,6 +375,41 @@ document.getElementById("pause-btn-mobile").addEventListener("touchstart", (e) =
   e.stopPropagation();
 });
 
+// Touch handlers for overlay screens (they sit on top of canvas and intercept touches)
+document.getElementById("start-screen").addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  if (state === "start") {
+    startGame();
+  }
+});
+document.getElementById("start-screen").addEventListener("click", (e) => {
+  if (state === "start") {
+    startGame();
+  }
+});
+
+document.getElementById("game-over-screen").addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  if (state === "gameover" && performance.now() - gameOverTime > 500) {
+    startGame();
+  }
+});
+document.getElementById("game-over-screen").addEventListener("click", (e) => {
+  if (state === "gameover" && performance.now() - gameOverTime > 500) {
+    startGame();
+  }
+});
+
+// Handle touch on the whole game container for entering_initials (drawn on canvas but overlay blocks)
+document.getElementById("game-container").addEventListener("touchstart", (e) => {
+  if (state === "entering_initials") {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const pos = screenToCanvas(touch.clientX, touch.clientY);
+    handleInitialsTouch(pos.x, pos.y);
+  }
+}, true);
+
 function showGameOverScreen() {
   document.getElementById("final-score").textContent = "Score: " + Math.floor(score);
   document.getElementById("high-score").textContent = "Best: " + Math.floor(highScore);
