@@ -14,13 +14,14 @@
             <div id="start-screen">
                 <h1>Neon Sprint</h1>
                 <div class="controls-desktop">
-                    <p>Press <kbd>Space</kbd> or <kbd>Up</kbd> to Jump</p>
+                    <p>Press <kbd>Space</kbd> / <kbd>Up</kbd> to Jump</p>
                     <p>Press <kbd>Down</kbd> to Slide</p>
+                    <p>Press <kbd>Tab</kbd> to Shoot Drones</p>
                     <p>Press <kbd>Esc</kbd> to Pause</p>
                 </div>
                 <div class="controls-mobile">
-                    <p>Tap top half to Jump</p>
-                    <p>Tap bottom half to Slide</p>
+                    <p>Left side: top = Jump, bottom = Slide</p>
+                    <p>Right side: tap to Shoot Drones</p>
                 </div>
                 <div id="start-leaderboard" class="leaderboard-container"></div>
                 <p class="start-prompt start-prompt-desktop">Press any key to start</p>
@@ -45,10 +46,13 @@
         </div>
         <div id="touch-controls" class="hidden">
             <div id="touch-zone-jump">
-                <span class="touch-label">TAP TO JUMP</span>
+                <span class="touch-label">JUMP</span>
             </div>
             <div id="touch-zone-slide">
-                <span class="touch-label">TAP TO SLIDE</span>
+                <span class="touch-label">SLIDE</span>
+            </div>
+            <div id="touch-zone-shoot">
+                <span class="touch-label">SHOOT</span>
             </div>
         </div>
         <button id="pause-btn-mobile" class="hidden" aria-label="Pause">&#10074;&#10074;</button>
