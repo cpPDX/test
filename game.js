@@ -21,6 +21,51 @@ const SPEED_TIER_SCORE = 1500;
 const FAST_DRONE_SCORE = 2000;
 const COMBO_OBSTACLE_SCORE = 2500;
 
+// ── Shooting / projectile constants ──
+const BULLET_SPEED = 10;
+const BULLET_WIDTH = 12;
+const BULLET_HEIGHT = 3;
+const SHOOT_COOLDOWN = 12; // frames between shots (~0.2s)
+const DRONE_KILL_SCORE = 50;
+
+// ── Time-of-day cycle ──
+// Each "period" lasts a score range. The cycle loops.
+const TIME_PERIODS = [
+  { name: "DUSK",         scoreLen: 500,  sky: ["#0d0818","#1a0a2e","#2a1040"], starAlpha: 0.25, moonAlpha: 0.08, haze: "rgba(80,20,60,0.06)", roadGlow: "#ff00ff" },
+  { name: "NIGHT",        scoreLen: 600,  sky: ["#020208","#060614","#0c0c24"], starAlpha: 0.6,  moonAlpha: 0.15, haze: null,                   roadGlow: "#ff00ff" },
+  { name: "MIDNIGHT",     scoreLen: 700,  sky: ["#000004","#030310","#08081c"], starAlpha: 0.8,  moonAlpha: 0.20, haze: null,                   roadGlow: "#cc00ff" },
+  { name: "ACID RAIN",    scoreLen: 500,  sky: ["#040808","#081018","#0c1820"], starAlpha: 0.05, moonAlpha: 0.03, haze: "rgba(0,255,80,0.04)",  roadGlow: "#00ff66" },
+  { name: "LATE NIGHT",   scoreLen: 600,  sky: ["#020206","#060612","#0a0a20"], starAlpha: 0.7,  moonAlpha: 0.18, haze: null,                   roadGlow: "#ff00ff" },
+  { name: "NEON FOG",     scoreLen: 500,  sky: ["#08040c","#140a1e","#1e1030"], starAlpha: 0.1,  moonAlpha: 0.05, haze: "rgba(180,0,255,0.06)", roadGlow: "#ff00cc" },
+  { name: "STORM",        scoreLen: 600,  sky: ["#060610","#0a0a1a","#101028"], starAlpha: 0.02, moonAlpha: 0.02, haze: "rgba(100,100,180,0.05)", roadGlow: "#6666ff" },
+  { name: "PRE-DAWN",     scoreLen: 400,  sky: ["#0a0410","#160820","#201038"], starAlpha: 0.35, moonAlpha: 0.10, haze: "rgba(100,40,80,0.04)", roadGlow: "#ff44aa" },
+];
+const TIME_CYCLE_LEN = TIME_PERIODS.reduce((s, p) => s + p.scoreLen, 0);
+
+function getCurrentTimePeriod() {
+  let cycleScore = score % TIME_CYCLE_LEN;
+  for (const period of TIME_PERIODS) {
+    if (cycleScore < period.scoreLen) return period;
+    cycleScore -= period.scoreLen;
+  }
+  return TIME_PERIODS[0];
+}
+
+// Get blend factor (0-1) of how far into the current period we are
+function getTimePeriodProgress() {
+  let cycleScore = score % TIME_CYCLE_LEN;
+  for (const period of TIME_PERIODS) {
+    if (cycleScore < period.scoreLen) return cycleScore / period.scoreLen;
+    cycleScore -= period.scoreLen;
+  }
+  return 0;
+}
+
+// ── Weather state ──
+let weatherParticles = [];
+let lightningTimer = 0;
+let lightningFlash = 0;
+
 const PLAYER_WIDTH = 36;
 const PLAYER_HEIGHT = 50;
 const DUCK_HEIGHT = 25;
@@ -101,6 +146,13 @@ let playerUnderground = false; // is the player currently below GROUND_Y?
 let tunnelObstacleTimer = 0;
 let tunnelExitGrace = 0;  // frames of obstacle-spawn grace after exiting tunnel
 let wasUnderground = false; // track transition for grace period
+
+// Shooting state
+let projectiles = [];   // { x, y, vx }
+let shootCooldown = 0;
+let droneKills = 0;     // total drones destroyed this run
+let killFlashTimer = 0; // screen flash on kill
+let lastKillText = "";  // "+50" popup
 
 // City background layers (parallax)
 const buildings = [];
@@ -208,8 +260,12 @@ document.addEventListener("keydown", (e) => {
     startGame();
     e.preventDefault();
   }
-  if (["Space", "ArrowUp", "ArrowDown", "KeyW", "KeyS"].includes(e.code)) {
+  if (["Space", "ArrowUp", "ArrowDown", "KeyW", "KeyS", "Tab"].includes(e.code)) {
     e.preventDefault();
+  }
+  // Shoot on Tab key
+  if (e.code === "Tab" && state === "playing") {
+    shootProjectile();
   }
 });
 
@@ -249,7 +305,10 @@ canvas.addEventListener("touchstart", (e) => {
   if (state === "paused") return;
   if (state !== "playing") return;
 
-  if (pos.y < canvas.height / 2) {
+  // Right third of screen = shoot, left two-thirds = jump/duck
+  if (pos.x > canvas.width * 0.66) {
+    shootProjectile();
+  } else if (pos.y < canvas.height / 2) {
     justPressed["ArrowUp"] = true;
     keys["ArrowUp"] = true;
   } else {
@@ -299,6 +358,14 @@ function startGame() {
   tunnelExitGrace = 0;
   wasUnderground = false;
   difficultyTier = "";
+  weatherParticles = [];
+  lightningTimer = 0;
+  lightningFlash = 0;
+  projectiles = [];
+  shootCooldown = 0;
+  droneKills = 0;
+  killFlashTimer = 0;
+  lastKillText = "";
   touchHintTimer = isTouchDevice ? 120 : 0; // ~2 seconds of touch hints
   generateBuildings();
 
@@ -564,6 +631,90 @@ function getGroundAt(x) {
   return UNDERGROUND_Y + (GROUND_Y - UNDERGROUND_Y) * pct;
 }
 
+function shootProjectile() {
+  if (shootCooldown > 0) return;
+  projectiles.push({
+    x: player.x + player.width,
+    y: player.y + player.height / 2 - BULLET_HEIGHT / 2,
+    vx: BULLET_SPEED + gameSpeed,
+    life: 1,
+  });
+  shootCooldown = SHOOT_COOLDOWN;
+  // Muzzle flash particles
+  for (let i = 0; i < 5; i++) {
+    particles.push({
+      x: player.x + player.width + 4,
+      y: player.y + player.height / 2,
+      vx: 2 + Math.random() * 4,
+      vy: (Math.random() - 0.5) * 3,
+      life: 0.3,
+      size: 2 + Math.random() * 2,
+      color: ["#00ffcc", "#ffaa00", "#ffffff"][Math.floor(Math.random() * 3)],
+    });
+  }
+}
+
+function updateProjectiles() {
+  if (shootCooldown > 0) shootCooldown--;
+  if (killFlashTimer > 0) killFlashTimer--;
+
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const b = projectiles[i];
+    b.x += b.vx;
+    b.life -= 0.008;
+
+    // Check collision with drones
+    for (let j = obstacles.length - 1; j >= 0; j--) {
+      const obs = obstacles[j];
+      if (obs.type !== "drone") continue;
+      if (b.x + BULLET_WIDTH > obs.x && b.x < obs.x + obs.width &&
+          b.y + BULLET_HEIGHT > obs.y && b.y < obs.y + obs.height) {
+        // Drone destroyed!
+        droneKills++;
+        score += DRONE_KILL_SCORE;
+        killFlashTimer = 8;
+        lastKillText = "+" + DRONE_KILL_SCORE;
+
+        // Explosion particles
+        for (let p = 0; p < 18; p++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 1.5 + Math.random() * 4;
+          particles.push({
+            x: obs.x + obs.width / 2,
+            y: obs.y + obs.height / 2,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 0.7 + Math.random() * 0.3,
+            size: 2 + Math.random() * 3,
+            color: ["#ff4444", "#ff6600", "#ffaa00", "#ff0044", "#ffffff"][Math.floor(Math.random() * 5)],
+          });
+        }
+        // Debris particles (darker, slower)
+        for (let p = 0; p < 8; p++) {
+          particles.push({
+            x: obs.x + Math.random() * obs.width,
+            y: obs.y + Math.random() * obs.height,
+            vx: (Math.random() - 0.5) * 3,
+            vy: 1 + Math.random() * 2,
+            life: 0.5,
+            size: 2 + Math.random() * 2,
+            color: "#333344",
+          });
+        }
+
+        obstacles.splice(j, 1);
+        projectiles.splice(i, 1);
+        break;
+      }
+    }
+
+    // Remove if off-screen or expired
+    if (i < projectiles.length && (projectiles[i].x > canvas.width + 20 || projectiles[i].life <= 0)) {
+      projectiles.splice(i, 1);
+    }
+  }
+}
+
 function updatePlayer() {
   const jumpKey = justPressed["Space"] || justPressed["ArrowUp"] || justPressed["KeyW"];
   const wantDuck = keys["ArrowDown"] || keys["KeyS"];
@@ -711,7 +862,7 @@ function updateTunnel() {
 // Create an underground-specific obstacle
 function createUndergroundObstacle() {
   const type = Math.random();
-  if (type < 0.3) {
+  if (type < 0.18) {
     // Pipe at head height — duck under
     return {
       x: canvas.width,
@@ -720,7 +871,7 @@ function createUndergroundObstacle() {
       height: 16,
       type: "pipe",
     };
-  } else if (type < 0.55) {
+  } else if (type < 0.32) {
     // Electrified puddle — small, jump over
     return {
       x: canvas.width,
@@ -729,7 +880,7 @@ function createUndergroundObstacle() {
       height: 12,
       type: "puddle_zap",
     };
-  } else if (type < 0.75) {
+  } else if (type < 0.46) {
     // Laser grid — horizontal beam across path, must duck under
     return {
       x: canvas.width,
@@ -739,7 +890,7 @@ function createUndergroundObstacle() {
       type: "laser_grid",
       spawnTime: performance.now(),
     };
-  } else if (type < 0.9) {
+  } else if (type < 0.58) {
     // Steam vent — erupts from floor, must jump over
     return {
       x: canvas.width,
@@ -749,7 +900,7 @@ function createUndergroundObstacle() {
       type: "steam_vent",
       spawnTime: performance.now(),
     };
-  } else {
+  } else if (type < 0.68) {
     // Hanging cables — dangle from ceiling, must duck
     return {
       x: canvas.width,
@@ -759,7 +910,96 @@ function createUndergroundObstacle() {
       type: "hanging_wire",
       spawnTime: performance.now(),
     };
+  } else if (type < 0.78) {
+    // Barrel stack — medium height, must jump over
+    return {
+      x: canvas.width,
+      y: UNDERGROUND_Y - 34,
+      width: 28,
+      height: 34,
+      type: "barrel_stack",
+    };
+  } else if (type < 0.88) {
+    // Ceiling crusher — piston slamming down, must time your run through
+    return {
+      x: canvas.width,
+      y: GROUND_Y,
+      width: 36,
+      height: UNDERGROUND_Y - GROUND_Y - DUCK_HEIGHT + 5,
+      type: "crusher",
+      spawnTime: performance.now(),
+    };
+  } else {
+    // Toxic gas cloud — wide low cloud, must jump over
+    return {
+      x: canvas.width,
+      y: UNDERGROUND_Y - 28,
+      width: 55,
+      height: 28,
+      type: "toxic_cloud",
+      spawnTime: performance.now(),
+    };
   }
+}
+
+// Create underground combo pairs — two obstacles that require quick reaction
+function createUndergroundCombo() {
+  const combo = Math.random();
+  const pair = [];
+  if (combo < 0.35) {
+    // Floor obstacle then ceiling obstacle — jump then duck
+    pair.push({
+      x: canvas.width,
+      y: UNDERGROUND_Y - 12,
+      width: 35,
+      height: 12,
+      type: "puddle_zap",
+    });
+    pair.push({
+      x: canvas.width + 130 + Math.random() * 40,
+      y: GROUND_Y,
+      width: 30,
+      height: UNDERGROUND_Y - GROUND_Y - DUCK_HEIGHT + 2,
+      type: "hanging_wire",
+      spawnTime: performance.now(),
+    });
+  } else if (combo < 0.7) {
+    // Ceiling obstacle then floor obstacle — duck then jump
+    pair.push({
+      x: canvas.width,
+      y: UNDERGROUND_Y - PLAYER_HEIGHT + 2,
+      width: 60,
+      height: 30,
+      type: "laser_grid",
+      spawnTime: performance.now(),
+    });
+    pair.push({
+      x: canvas.width + 150 + Math.random() * 40,
+      y: UNDERGROUND_Y - 40,
+      width: 20,
+      height: 40,
+      type: "steam_vent",
+      spawnTime: performance.now(),
+    });
+  } else {
+    // Double floor hazard — two jumps in quick succession
+    pair.push({
+      x: canvas.width,
+      y: UNDERGROUND_Y - 34,
+      width: 28,
+      height: 34,
+      type: "barrel_stack",
+    });
+    pair.push({
+      x: canvas.width + 120 + Math.random() * 30,
+      y: UNDERGROUND_Y - 28,
+      width: 55,
+      height: 28,
+      type: "toxic_cloud",
+      spawnTime: performance.now(),
+    });
+  }
+  return pair;
 }
 
 function updateObstacles() {
@@ -768,10 +1008,17 @@ function updateObstacles() {
   const minGap = Math.max(55, 100 - gameSpeed * 3);
 
   if (playerUnderground) {
-    // Underground obstacle spawning
+    // Underground obstacle spawning — tighter gaps than surface
     tunnelObstacleTimer++;
-    if (tunnelObstacleTimer > minGap + 20) {
-      obstacles.push(createUndergroundObstacle());
+    const ugGap = minGap + 5; // much tighter than the old +20
+    if (tunnelObstacleTimer > ugGap) {
+      // 25% chance of combo obstacles (two in quick succession)
+      if (Math.random() < 0.25) {
+        const combo = createUndergroundCombo();
+        for (const obs of combo) obstacles.push(obs);
+      } else {
+        obstacles.push(createUndergroundObstacle());
+      }
       tunnelObstacleTimer = 0;
     }
   } else if (
@@ -831,7 +1078,8 @@ function checkCollisions() {
   for (const obs of obstacles) {
     // Skip surface obstacles when player is underground, and vice versa
     const isUndergroundObs = obs.type === "pipe" || obs.type === "puddle_zap" ||
-      obs.type === "laser_grid" || obs.type === "steam_vent" || obs.type === "hanging_wire";
+      obs.type === "laser_grid" || obs.type === "steam_vent" || obs.type === "hanging_wire" ||
+      obs.type === "barrel_stack" || obs.type === "crusher" || obs.type === "toxic_cloud";
     if (playerUnderground && !isUndergroundObs) continue;
     if (!playerUnderground && isUndergroundObs) continue;
 
@@ -859,16 +1107,32 @@ function updateParticles() {
 // ---------- DRAWING ----------
 
 function drawSky() {
-  // Gradient sky
+  const period = getCurrentTimePeriod();
   const grad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
-  grad.addColorStop(0, "#050510");
-  grad.addColorStop(0.5, "#0a0a20");
-  grad.addColorStop(1, "#101030");
+  grad.addColorStop(0, period.sky[0]);
+  grad.addColorStop(0.5, period.sky[1]);
+  grad.addColorStop(1, period.sky[2]);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, canvas.width, GROUND_Y);
+
+  // Atmospheric haze overlay
+  if (period.haze) {
+    ctx.fillStyle = period.haze;
+    ctx.fillRect(0, 0, canvas.width, GROUND_Y);
+  }
+
+  // Lightning flash overlay (for STORM period)
+  if (lightningFlash > 0) {
+    ctx.fillStyle = `rgba(200, 200, 255, ${lightningFlash * 0.3})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    lightningFlash *= 0.85;
+    if (lightningFlash < 0.01) lightningFlash = 0;
+  }
 }
 
 function drawStars() {
+  const period = getCurrentTimePeriod();
+  if (period.starAlpha < 0.03) return; // no stars in heavy weather
   const starSeed = [
     [50, 20], [150, 40], [250, 15], [370, 35], [480, 25],
     [560, 50], [650, 18], [720, 42], [100, 55], [310, 48],
@@ -877,7 +1141,7 @@ function drawStars() {
   ];
   for (const [sx, sy] of starSeed) {
     const flicker = 0.3 + Math.sin(Date.now() / 800 + sx * 0.5) * 0.25;
-    ctx.globalAlpha = flicker;
+    ctx.globalAlpha = flicker * period.starAlpha;
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(sx, sy, 1.5, 1.5);
   }
@@ -885,17 +1149,150 @@ function drawStars() {
 }
 
 function drawMoon() {
+  const period = getCurrentTimePeriod();
+  if (period.moonAlpha < 0.03) return; // hidden during storms/rain
   ctx.save();
-  ctx.globalAlpha = 0.15;
+  ctx.globalAlpha = period.moonAlpha;
   ctx.fillStyle = "#ff88cc";
   ctx.beginPath();
   ctx.arc(680, 50, 25, 0, Math.PI * 2);
   ctx.fill();
-  ctx.globalAlpha = 0.08;
+  ctx.globalAlpha = period.moonAlpha * 0.5;
   ctx.fillStyle = "#ff00ff";
   ctx.beginPath();
   ctx.arc(680, 50, 40, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
+}
+
+function updateWeather() {
+  const period = getCurrentTimePeriod();
+
+  // === Acid Rain ===
+  if (period.name === "ACID RAIN") {
+    // Spawn rain drops
+    if (weatherParticles.length < 80) {
+      for (let i = 0; i < 3; i++) {
+        weatherParticles.push({
+          type: "rain",
+          x: Math.random() * (canvas.width + 100) - 50,
+          y: -10 - Math.random() * 40,
+          vx: -1.5 - Math.random(),
+          vy: 6 + Math.random() * 4,
+          len: 8 + Math.random() * 6,
+          life: 1,
+        });
+      }
+    }
+  }
+
+  // === Neon Fog ===
+  if (period.name === "NEON FOG") {
+    if (weatherParticles.length < 25) {
+      weatherParticles.push({
+        type: "fog",
+        x: canvas.width + Math.random() * 100,
+        y: 50 + Math.random() * (GROUND_Y - 80),
+        radius: 30 + Math.random() * 50,
+        vx: -0.5 - Math.random() * 0.8,
+        alpha: 0.03 + Math.random() * 0.04,
+        hue: Math.random() > 0.5 ? 280 : 300,
+        life: 1,
+      });
+    }
+  }
+
+  // === Storm (lightning + heavy rain) ===
+  if (period.name === "STORM") {
+    // Heavy rain
+    if (weatherParticles.length < 120) {
+      for (let i = 0; i < 5; i++) {
+        weatherParticles.push({
+          type: "rain",
+          x: Math.random() * (canvas.width + 100) - 50,
+          y: -10 - Math.random() * 40,
+          vx: -2 - Math.random() * 2,
+          vy: 8 + Math.random() * 5,
+          len: 10 + Math.random() * 8,
+          life: 1,
+        });
+      }
+    }
+    // Lightning
+    lightningTimer--;
+    if (lightningTimer <= 0) {
+      lightningFlash = 0.6 + Math.random() * 0.4;
+      lightningTimer = 120 + Math.random() * 300; // every 2-7 seconds
+    }
+  }
+
+  // Update and cull particles
+  for (let i = weatherParticles.length - 1; i >= 0; i--) {
+    const p = weatherParticles[i];
+    p.x += p.vx || 0;
+    p.y += (p.vy || 0);
+    if (p.type === "rain" && p.y > GROUND_Y) {
+      weatherParticles.splice(i, 1);
+    } else if (p.type === "fog" && p.x + p.radius < -50) {
+      weatherParticles.splice(i, 1);
+    }
+  }
+
+  // Clean up particles when weather changes
+  if (period.name !== "ACID RAIN" && period.name !== "STORM") {
+    weatherParticles = weatherParticles.filter(p => p.type !== "rain");
+  }
+  if (period.name !== "NEON FOG") {
+    weatherParticles = weatherParticles.filter(p => p.type !== "fog");
+  }
+}
+
+function drawWeather() {
+  const period = getCurrentTimePeriod();
+  ctx.save();
+
+  for (const p of weatherParticles) {
+    if (p.type === "rain") {
+      // Acid rain = green tint, storm rain = blue-white
+      if (period.name === "ACID RAIN") {
+        ctx.strokeStyle = "rgba(0, 255, 100, 0.35)";
+      } else {
+        ctx.strokeStyle = "rgba(150, 170, 220, 0.3)";
+      }
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + p.vx * 0.5, p.y + p.len);
+      ctx.stroke();
+    } else if (p.type === "fog") {
+      ctx.fillStyle = `hsla(${p.hue}, 60%, 50%, ${p.alpha})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Storm: draw lightning bolt on flash
+  if (period.name === "STORM" && lightningFlash > 0.3) {
+    ctx.save();
+    ctx.strokeStyle = `rgba(200, 200, 255, ${lightningFlash * 0.7})`;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = "#aaaaff";
+    ctx.shadowBlur = 15;
+    const boltX = 100 + Math.random() * (canvas.width - 200);
+    let bx = boltX, by = 0;
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    while (by < GROUND_Y - 20) {
+      bx += (Math.random() - 0.5) * 30;
+      by += 15 + Math.random() * 25;
+      ctx.lineTo(bx, Math.min(by, GROUND_Y - 10));
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
   ctx.restore();
 }
 
@@ -969,7 +1366,8 @@ function drawGround() {
 
   // Neon road line (break at tunnel entrance/exit)
   const t = Date.now() / 1000;
-  ctx.strokeStyle = "#ff00ff";
+  const period = getCurrentTimePeriod();
+  ctx.strokeStyle = period.roadGlow;
   ctx.lineWidth = 2;
   ctx.globalAlpha = 0.6 + Math.sin(t * 3) * 0.2;
   if (tunnel) {
@@ -990,11 +1388,13 @@ function drawGround() {
   }
   ctx.globalAlpha = 1;
 
-  // Glow under the road line
-  const roadGlow = ctx.createLinearGradient(0, GROUND_Y, 0, GROUND_Y + 8);
-  roadGlow.addColorStop(0, "rgba(255, 0, 255, 0.2)");
-  roadGlow.addColorStop(1, "rgba(255, 0, 255, 0)");
-  ctx.fillStyle = roadGlow;
+  // Glow under the road line (match current time-of-day road color)
+  const rgHex = period.roadGlow;
+  const rgR = parseInt(rgHex.slice(1,3), 16), rgG = parseInt(rgHex.slice(3,5), 16), rgB = parseInt(rgHex.slice(5,7), 16);
+  const roadGlowGrad = ctx.createLinearGradient(0, GROUND_Y, 0, GROUND_Y + 8);
+  roadGlowGrad.addColorStop(0, `rgba(${rgR}, ${rgG}, ${rgB}, 0.2)`);
+  roadGlowGrad.addColorStop(1, `rgba(${rgR}, ${rgG}, ${rgB}, 0)`);
+  ctx.fillStyle = roadGlowGrad;
   ctx.fillRect(0, GROUND_Y, canvas.width, 8);
 
   // Dashed center line
@@ -1236,6 +1636,26 @@ function drawObstacle(obs) {
     ctx.fillStyle = "#ff0044";
     ctx.fillRect(obs.x + 5, obs.y - 4, obs.width - 10, obs.height + 8);
     ctx.globalAlpha = 1;
+
+    // Target reticle — pulsing circle around drone
+    const reticleAlpha = 0.2 + Math.sin(t / 150) * 0.15;
+    ctx.strokeStyle = "#ff0044";
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = reticleAlpha;
+    const cx = obs.x + obs.width / 2;
+    const cy = obs.y + obs.height / 2;
+    const rr = 18 + Math.sin(t / 200) * 3;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rr, 0, Math.PI * 2);
+    ctx.stroke();
+    // Crosshair ticks
+    ctx.beginPath();
+    ctx.moveTo(cx - rr - 3, cy); ctx.lineTo(cx - rr + 4, cy);
+    ctx.moveTo(cx + rr - 4, cy); ctx.lineTo(cx + rr + 3, cy);
+    ctx.moveTo(cx, cy - rr - 3); ctx.lineTo(cx, cy - rr + 4);
+    ctx.moveTo(cx, cy + rr - 4); ctx.lineTo(cx, cy + rr + 3);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   } else if (obs.type === "pipe") {
     // Underground pipe — horizontal, industrial
     ctx.fillStyle = "#2a3a2a";
@@ -1353,6 +1773,91 @@ function drawObstacle(obs) {
       ctx.fillRect(obs.x + 12 + sway - 2, obs.y + obs.height - 4, 4, 4);
       ctx.globalAlpha = 1;
     }
+  } else if (obs.type === "barrel_stack") {
+    // Stacked industrial barrels — jump over
+    const barrelW = 14;
+    const barrelH = 16;
+    // Bottom barrel
+    ctx.fillStyle = "#3a2a1a";
+    ctx.fillRect(obs.x + 2, obs.y + barrelH, barrelW * 2 - 4, barrelH);
+    ctx.fillStyle = "#4a3a2a";
+    ctx.fillRect(obs.x + 4, obs.y + barrelH + 2, barrelW * 2 - 8, barrelH - 4);
+    // Top barrel
+    ctx.fillStyle = "#3a2a1a";
+    ctx.fillRect(obs.x + 5, obs.y, barrelW, barrelH);
+    ctx.fillStyle = "#4a3a2a";
+    ctx.fillRect(obs.x + 7, obs.y + 2, barrelW - 4, barrelH - 4);
+    // Hazard stripe
+    ctx.fillStyle = "#ff6600";
+    ctx.globalAlpha = 0.5;
+    ctx.fillRect(obs.x + 6, obs.y + 6, barrelW - 2, 3);
+    ctx.fillRect(obs.x + 3, obs.y + barrelH + 6, barrelW * 2 - 6, 3);
+    ctx.globalAlpha = 1;
+    // Toxic drip
+    const dripPhase = (t + obs.x * 0.5) % 800;
+    if (dripPhase < 400) {
+      ctx.fillStyle = "#00ff66";
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(obs.x + 12, obs.y + obs.height + (dripPhase / 400) * 6, 2, 3);
+      ctx.globalAlpha = 1;
+    }
+  } else if (obs.type === "crusher") {
+    // Ceiling piston slamming down — duck under
+    const elapsed = (t - obs.spawnTime) / 1000;
+    const crushCycle = Math.abs(Math.sin(elapsed * 2.5));
+    const pistonY = obs.y;
+    const pistonH = obs.height * (0.6 + crushCycle * 0.4);
+    // Piston housing on ceiling
+    ctx.fillStyle = "#2a2a3e";
+    ctx.fillRect(obs.x - 2, pistonY, obs.width + 4, 10);
+    // Piston shaft
+    ctx.fillStyle = "#444466";
+    ctx.fillRect(obs.x + 4, pistonY + 10, obs.width - 8, pistonH - 16);
+    // Piston head
+    ctx.fillStyle = "#555577";
+    ctx.fillRect(obs.x, pistonY + pistonH - 8, obs.width, 8);
+    // Impact sparks when near full extension
+    if (crushCycle > 0.85) {
+      ctx.fillStyle = "#ffaa00";
+      ctx.globalAlpha = (crushCycle - 0.85) * 6;
+      for (let sp = 0; sp < 3; sp++) {
+        const sx = obs.x + Math.random() * obs.width;
+        ctx.fillRect(sx, pistonY + pistonH - 2, 2, 2);
+      }
+      ctx.globalAlpha = 1;
+    }
+    // Warning stripe on head
+    ctx.fillStyle = "#ff0033";
+    ctx.globalAlpha = 0.4 + Math.sin(elapsed * 8) * 0.2;
+    ctx.fillRect(obs.x + 2, pistonY + pistonH - 6, obs.width - 4, 2);
+    ctx.globalAlpha = 1;
+  } else if (obs.type === "toxic_cloud") {
+    // Low-lying toxic gas cloud — jump over
+    const elapsed = (t - obs.spawnTime) / 1000;
+    // Cloud puffs
+    for (let ci = 0; ci < 5; ci++) {
+      const cx = obs.x + ci * 11 + Math.sin(elapsed * 1.5 + ci * 1.2) * 3;
+      const cy = obs.y + 6 + Math.sin(elapsed * 2 + ci * 0.8) * 4;
+      const cr = 8 + Math.sin(elapsed + ci) * 2;
+      ctx.fillStyle = "#00ff44";
+      ctx.globalAlpha = 0.12 + Math.sin(elapsed * 1.5 + ci) * 0.05;
+      ctx.beginPath();
+      ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Denser core
+    ctx.fillStyle = "#00cc33";
+    ctx.globalAlpha = 0.15;
+    ctx.fillRect(obs.x + 5, obs.y + 8, obs.width - 10, obs.height - 12);
+    ctx.globalAlpha = 1;
+    // Skull warning icon (simple pixel art)
+    ctx.fillStyle = "#00ff44";
+    ctx.globalAlpha = 0.3 + Math.sin(elapsed * 3) * 0.15;
+    ctx.font = "bold 10px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("☠", obs.x + obs.width / 2, obs.y + obs.height / 2 + 3);
+    ctx.textAlign = "left";
+    ctx.globalAlpha = 1;
   }
 
   ctx.restore();
@@ -1584,6 +2089,45 @@ function drawTunnel() {
   ctx.restore();
 }
 
+function drawProjectiles() {
+  ctx.save();
+  for (const b of projectiles) {
+    const t = Date.now();
+    // Neon bullet core
+    ctx.fillStyle = "#00ffcc";
+    ctx.globalAlpha = 0.9 * b.life;
+    ctx.fillRect(b.x, b.y, BULLET_WIDTH, BULLET_HEIGHT);
+    // Bright center line
+    ctx.fillStyle = "#ffffff";
+    ctx.globalAlpha = 0.7 * b.life;
+    ctx.fillRect(b.x + 2, b.y + 1, BULLET_WIDTH - 4, 1);
+    // Glow trail
+    ctx.fillStyle = "#00ffcc";
+    ctx.globalAlpha = 0.15 * b.life;
+    ctx.fillRect(b.x - 8, b.y - 2, BULLET_WIDTH + 8, BULLET_HEIGHT + 4);
+    // Trailing particles (small)
+    ctx.fillStyle = "#00ffcc";
+    ctx.globalAlpha = 0.3 * b.life;
+    ctx.fillRect(b.x - 4 - Math.random() * 6, b.y + Math.random() * BULLET_HEIGHT, 3, 1);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawKillPopup() {
+  if (killFlashTimer > 0 && lastKillText) {
+    ctx.save();
+    ctx.font = "bold 14px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ff4444";
+    ctx.globalAlpha = killFlashTimer / 8;
+    const popY = player.y - 20 - (8 - killFlashTimer) * 2;
+    ctx.fillText(lastKillText, player.x + player.width / 2, popY);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+}
+
 function drawParticles() {
   for (const p of particles) {
     ctx.globalAlpha = Math.max(0, p.life);
@@ -1754,6 +2298,24 @@ function drawHUD() {
     ctx.restore();
   }
 
+  // Time-of-day / weather label
+  if (state === "playing" && !playerUnderground) {
+    const period = getCurrentTimePeriod();
+    const timeColors = {
+      "DUSK": "#cc66aa", "NIGHT": "#6666aa", "MIDNIGHT": "#8844cc",
+      "ACID RAIN": "#00ff66", "LATE NIGHT": "#6666aa", "NEON FOG": "#cc44ff",
+      "STORM": "#6688ff", "PRE-DAWN": "#cc6688",
+    };
+    ctx.save();
+    ctx.font = "7px 'Courier New', monospace";
+    ctx.textAlign = "right";
+    ctx.fillStyle = timeColors[period.name] || "#666688";
+    ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 600) * 0.15;
+    ctx.fillText(period.name, canvas.width - 40, 38);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
   // Double jump indicator
   if (player.canDoubleJump) {
     const maxJumps = 2;
@@ -1805,29 +2367,58 @@ function drawHUD() {
     ctx.fillText("JET", 14, fuelY + 12);
   }
 
+  // Drone kills counter
+  if (droneKills > 0) {
+    const killY = jetpackUnlocked ? (player.canDoubleJump ? 64 : 52) : (player.canDoubleJump ? 50 : 38);
+    ctx.fillStyle = "#ff4444";
+    ctx.globalAlpha = 0.7;
+    ctx.font = "8px 'Courier New', monospace";
+    ctx.fillText("KILLS " + droneKills, 14, killY);
+    ctx.globalAlpha = 1;
+  }
+
+  // Shoot cooldown indicator (small bar near player)
+  if (shootCooldown > 0) {
+    ctx.fillStyle = "#00ffcc";
+    ctx.globalAlpha = 0.3;
+    const cdPct = shootCooldown / SHOOT_COOLDOWN;
+    ctx.fillRect(player.x, player.y - 6, player.width * (1 - cdPct), 2);
+    ctx.globalAlpha = 1;
+  }
+
   // Touch zone hint (fades out)
   if (isTouchDevice && touchHintTimer > 0) {
     const hintAlpha = Math.min(0.4, touchHintTimer / 120 * 0.4);
 
-    // Divider line
+    // Horizontal divider
     ctx.strokeStyle = "#00ffcc";
     ctx.lineWidth = 1;
     ctx.globalAlpha = hintAlpha * 0.5;
     ctx.setLineDash([8, 8]);
     ctx.beginPath();
     ctx.moveTo(0, canvas.height / 2);
-    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.lineTo(canvas.width * 0.66, canvas.height / 2);
+    ctx.stroke();
+
+    // Vertical divider for shoot zone
+    ctx.strokeStyle = "#ff4444";
+    ctx.beginPath();
+    ctx.moveTo(canvas.width * 0.66, 0);
+    ctx.lineTo(canvas.width * 0.66, canvas.height);
     ctx.stroke();
     ctx.setLineDash([]);
 
     // Labels
-    ctx.font = "bold 16px 'Courier New', monospace";
+    ctx.font = "bold 14px 'Courier New', monospace";
     ctx.textAlign = "center";
     ctx.globalAlpha = hintAlpha;
     ctx.fillStyle = "#00ffcc";
-    ctx.fillText("TAP TO JUMP", canvas.width / 2, canvas.height / 2 - 30);
+    ctx.fillText("TAP TO JUMP", canvas.width * 0.33, canvas.height / 2 - 30);
     ctx.fillStyle = "#ff00ff";
-    ctx.fillText("TAP TO SLIDE", canvas.width / 2, canvas.height / 2 + 45);
+    ctx.fillText("TAP TO SLIDE", canvas.width * 0.33, canvas.height / 2 + 45);
+    ctx.fillStyle = "#ff4444";
+    ctx.fillText("TAP TO", canvas.width * 0.83, canvas.height / 2 - 10);
+    ctx.fillText("SHOOT", canvas.width * 0.83, canvas.height / 2 + 10);
     ctx.textAlign = "left";
     ctx.globalAlpha = 1;
   }
@@ -1848,6 +2439,7 @@ function draw() {
   drawMoon();
   drawCityLayer(farBuildings, 0.15, 0.5);
   drawCityLayer(buildings, 0.4, 0.7);
+  drawWeather(); // rain/fog/lightning between buildings and ground
   drawGround();
   drawTunnel();
 
@@ -1872,8 +2464,10 @@ function draw() {
     }
   }
 
+  drawProjectiles();
   drawParticles();
   drawHUD();
+  drawKillPopup();
 
   if (state === "entering_initials") {
     drawInitialsEntry();
@@ -1999,8 +2593,10 @@ function update() {
   updatePlayer();
   updateTunnel();
   updateObstacles();
+  updateProjectiles();
   checkCollisions();
   updateParticles();
+  updateWeather();
 
   document.getElementById("score-display").textContent =
     "SCORE " + String(Math.floor(score)).padStart(6, "0");
