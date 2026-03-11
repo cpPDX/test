@@ -711,7 +711,7 @@ function updateTunnel() {
 // Create an underground-specific obstacle
 function createUndergroundObstacle() {
   const type = Math.random();
-  if (type < 0.3) {
+  if (type < 0.18) {
     // Pipe at head height — duck under
     return {
       x: canvas.width,
@@ -720,7 +720,7 @@ function createUndergroundObstacle() {
       height: 16,
       type: "pipe",
     };
-  } else if (type < 0.55) {
+  } else if (type < 0.32) {
     // Electrified puddle — small, jump over
     return {
       x: canvas.width,
@@ -729,7 +729,7 @@ function createUndergroundObstacle() {
       height: 12,
       type: "puddle_zap",
     };
-  } else if (type < 0.75) {
+  } else if (type < 0.46) {
     // Laser grid — horizontal beam across path, must duck under
     return {
       x: canvas.width,
@@ -739,7 +739,7 @@ function createUndergroundObstacle() {
       type: "laser_grid",
       spawnTime: performance.now(),
     };
-  } else if (type < 0.9) {
+  } else if (type < 0.58) {
     // Steam vent — erupts from floor, must jump over
     return {
       x: canvas.width,
@@ -749,7 +749,7 @@ function createUndergroundObstacle() {
       type: "steam_vent",
       spawnTime: performance.now(),
     };
-  } else {
+  } else if (type < 0.68) {
     // Hanging cables — dangle from ceiling, must duck
     return {
       x: canvas.width,
@@ -759,7 +759,96 @@ function createUndergroundObstacle() {
       type: "hanging_wire",
       spawnTime: performance.now(),
     };
+  } else if (type < 0.78) {
+    // Barrel stack — medium height, must jump over
+    return {
+      x: canvas.width,
+      y: UNDERGROUND_Y - 34,
+      width: 28,
+      height: 34,
+      type: "barrel_stack",
+    };
+  } else if (type < 0.88) {
+    // Ceiling crusher — piston slamming down, must time your run through
+    return {
+      x: canvas.width,
+      y: GROUND_Y,
+      width: 36,
+      height: UNDERGROUND_Y - GROUND_Y - DUCK_HEIGHT + 5,
+      type: "crusher",
+      spawnTime: performance.now(),
+    };
+  } else {
+    // Toxic gas cloud — wide low cloud, must jump over
+    return {
+      x: canvas.width,
+      y: UNDERGROUND_Y - 28,
+      width: 55,
+      height: 28,
+      type: "toxic_cloud",
+      spawnTime: performance.now(),
+    };
   }
+}
+
+// Create underground combo pairs — two obstacles that require quick reaction
+function createUndergroundCombo() {
+  const combo = Math.random();
+  const pair = [];
+  if (combo < 0.35) {
+    // Floor obstacle then ceiling obstacle — jump then duck
+    pair.push({
+      x: canvas.width,
+      y: UNDERGROUND_Y - 12,
+      width: 35,
+      height: 12,
+      type: "puddle_zap",
+    });
+    pair.push({
+      x: canvas.width + 130 + Math.random() * 40,
+      y: GROUND_Y,
+      width: 30,
+      height: UNDERGROUND_Y - GROUND_Y - DUCK_HEIGHT + 2,
+      type: "hanging_wire",
+      spawnTime: performance.now(),
+    });
+  } else if (combo < 0.7) {
+    // Ceiling obstacle then floor obstacle — duck then jump
+    pair.push({
+      x: canvas.width,
+      y: UNDERGROUND_Y - PLAYER_HEIGHT + 2,
+      width: 60,
+      height: 30,
+      type: "laser_grid",
+      spawnTime: performance.now(),
+    });
+    pair.push({
+      x: canvas.width + 150 + Math.random() * 40,
+      y: UNDERGROUND_Y - 40,
+      width: 20,
+      height: 40,
+      type: "steam_vent",
+      spawnTime: performance.now(),
+    });
+  } else {
+    // Double floor hazard — two jumps in quick succession
+    pair.push({
+      x: canvas.width,
+      y: UNDERGROUND_Y - 34,
+      width: 28,
+      height: 34,
+      type: "barrel_stack",
+    });
+    pair.push({
+      x: canvas.width + 120 + Math.random() * 30,
+      y: UNDERGROUND_Y - 28,
+      width: 55,
+      height: 28,
+      type: "toxic_cloud",
+      spawnTime: performance.now(),
+    });
+  }
+  return pair;
 }
 
 function updateObstacles() {
@@ -768,10 +857,17 @@ function updateObstacles() {
   const minGap = Math.max(55, 100 - gameSpeed * 3);
 
   if (playerUnderground) {
-    // Underground obstacle spawning
+    // Underground obstacle spawning — tighter gaps than surface
     tunnelObstacleTimer++;
-    if (tunnelObstacleTimer > minGap + 20) {
-      obstacles.push(createUndergroundObstacle());
+    const ugGap = minGap + 5; // much tighter than the old +20
+    if (tunnelObstacleTimer > ugGap) {
+      // 25% chance of combo obstacles (two in quick succession)
+      if (Math.random() < 0.25) {
+        const combo = createUndergroundCombo();
+        for (const obs of combo) obstacles.push(obs);
+      } else {
+        obstacles.push(createUndergroundObstacle());
+      }
       tunnelObstacleTimer = 0;
     }
   } else if (
@@ -831,7 +927,8 @@ function checkCollisions() {
   for (const obs of obstacles) {
     // Skip surface obstacles when player is underground, and vice versa
     const isUndergroundObs = obs.type === "pipe" || obs.type === "puddle_zap" ||
-      obs.type === "laser_grid" || obs.type === "steam_vent" || obs.type === "hanging_wire";
+      obs.type === "laser_grid" || obs.type === "steam_vent" || obs.type === "hanging_wire" ||
+      obs.type === "barrel_stack" || obs.type === "crusher" || obs.type === "toxic_cloud";
     if (playerUnderground && !isUndergroundObs) continue;
     if (!playerUnderground && isUndergroundObs) continue;
 
@@ -1353,6 +1450,91 @@ function drawObstacle(obs) {
       ctx.fillRect(obs.x + 12 + sway - 2, obs.y + obs.height - 4, 4, 4);
       ctx.globalAlpha = 1;
     }
+  } else if (obs.type === "barrel_stack") {
+    // Stacked industrial barrels — jump over
+    const barrelW = 14;
+    const barrelH = 16;
+    // Bottom barrel
+    ctx.fillStyle = "#3a2a1a";
+    ctx.fillRect(obs.x + 2, obs.y + barrelH, barrelW * 2 - 4, barrelH);
+    ctx.fillStyle = "#4a3a2a";
+    ctx.fillRect(obs.x + 4, obs.y + barrelH + 2, barrelW * 2 - 8, barrelH - 4);
+    // Top barrel
+    ctx.fillStyle = "#3a2a1a";
+    ctx.fillRect(obs.x + 5, obs.y, barrelW, barrelH);
+    ctx.fillStyle = "#4a3a2a";
+    ctx.fillRect(obs.x + 7, obs.y + 2, barrelW - 4, barrelH - 4);
+    // Hazard stripe
+    ctx.fillStyle = "#ff6600";
+    ctx.globalAlpha = 0.5;
+    ctx.fillRect(obs.x + 6, obs.y + 6, barrelW - 2, 3);
+    ctx.fillRect(obs.x + 3, obs.y + barrelH + 6, barrelW * 2 - 6, 3);
+    ctx.globalAlpha = 1;
+    // Toxic drip
+    const dripPhase = (t + obs.x * 0.5) % 800;
+    if (dripPhase < 400) {
+      ctx.fillStyle = "#00ff66";
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(obs.x + 12, obs.y + obs.height + (dripPhase / 400) * 6, 2, 3);
+      ctx.globalAlpha = 1;
+    }
+  } else if (obs.type === "crusher") {
+    // Ceiling piston slamming down — duck under
+    const elapsed = (t - obs.spawnTime) / 1000;
+    const crushCycle = Math.abs(Math.sin(elapsed * 2.5));
+    const pistonY = obs.y;
+    const pistonH = obs.height * (0.6 + crushCycle * 0.4);
+    // Piston housing on ceiling
+    ctx.fillStyle = "#2a2a3e";
+    ctx.fillRect(obs.x - 2, pistonY, obs.width + 4, 10);
+    // Piston shaft
+    ctx.fillStyle = "#444466";
+    ctx.fillRect(obs.x + 4, pistonY + 10, obs.width - 8, pistonH - 16);
+    // Piston head
+    ctx.fillStyle = "#555577";
+    ctx.fillRect(obs.x, pistonY + pistonH - 8, obs.width, 8);
+    // Impact sparks when near full extension
+    if (crushCycle > 0.85) {
+      ctx.fillStyle = "#ffaa00";
+      ctx.globalAlpha = (crushCycle - 0.85) * 6;
+      for (let sp = 0; sp < 3; sp++) {
+        const sx = obs.x + Math.random() * obs.width;
+        ctx.fillRect(sx, pistonY + pistonH - 2, 2, 2);
+      }
+      ctx.globalAlpha = 1;
+    }
+    // Warning stripe on head
+    ctx.fillStyle = "#ff0033";
+    ctx.globalAlpha = 0.4 + Math.sin(elapsed * 8) * 0.2;
+    ctx.fillRect(obs.x + 2, pistonY + pistonH - 6, obs.width - 4, 2);
+    ctx.globalAlpha = 1;
+  } else if (obs.type === "toxic_cloud") {
+    // Low-lying toxic gas cloud — jump over
+    const elapsed = (t - obs.spawnTime) / 1000;
+    // Cloud puffs
+    for (let ci = 0; ci < 5; ci++) {
+      const cx = obs.x + ci * 11 + Math.sin(elapsed * 1.5 + ci * 1.2) * 3;
+      const cy = obs.y + 6 + Math.sin(elapsed * 2 + ci * 0.8) * 4;
+      const cr = 8 + Math.sin(elapsed + ci) * 2;
+      ctx.fillStyle = "#00ff44";
+      ctx.globalAlpha = 0.12 + Math.sin(elapsed * 1.5 + ci) * 0.05;
+      ctx.beginPath();
+      ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Denser core
+    ctx.fillStyle = "#00cc33";
+    ctx.globalAlpha = 0.15;
+    ctx.fillRect(obs.x + 5, obs.y + 8, obs.width - 10, obs.height - 12);
+    ctx.globalAlpha = 1;
+    // Skull warning icon (simple pixel art)
+    ctx.fillStyle = "#00ff44";
+    ctx.globalAlpha = 0.3 + Math.sin(elapsed * 3) * 0.15;
+    ctx.font = "bold 10px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("☠", obs.x + obs.width / 2, obs.y + obs.height / 2 + 3);
+    ctx.textAlign = "left";
+    ctx.globalAlpha = 1;
   }
 
   ctx.restore();
