@@ -21,6 +21,44 @@ const SPEED_TIER_SCORE = 1500;
 const FAST_DRONE_SCORE = 2000;
 const COMBO_OBSTACLE_SCORE = 2500;
 
+// ── Time-of-day cycle ──
+// Each "period" lasts a score range. The cycle loops.
+const TIME_PERIODS = [
+  { name: "DUSK",         scoreLen: 500,  sky: ["#0d0818","#1a0a2e","#2a1040"], starAlpha: 0.25, moonAlpha: 0.08, haze: "rgba(80,20,60,0.06)", roadGlow: "#ff00ff" },
+  { name: "NIGHT",        scoreLen: 600,  sky: ["#020208","#060614","#0c0c24"], starAlpha: 0.6,  moonAlpha: 0.15, haze: null,                   roadGlow: "#ff00ff" },
+  { name: "MIDNIGHT",     scoreLen: 700,  sky: ["#000004","#030310","#08081c"], starAlpha: 0.8,  moonAlpha: 0.20, haze: null,                   roadGlow: "#cc00ff" },
+  { name: "ACID RAIN",    scoreLen: 500,  sky: ["#040808","#081018","#0c1820"], starAlpha: 0.05, moonAlpha: 0.03, haze: "rgba(0,255,80,0.04)",  roadGlow: "#00ff66" },
+  { name: "LATE NIGHT",   scoreLen: 600,  sky: ["#020206","#060612","#0a0a20"], starAlpha: 0.7,  moonAlpha: 0.18, haze: null,                   roadGlow: "#ff00ff" },
+  { name: "NEON FOG",     scoreLen: 500,  sky: ["#08040c","#140a1e","#1e1030"], starAlpha: 0.1,  moonAlpha: 0.05, haze: "rgba(180,0,255,0.06)", roadGlow: "#ff00cc" },
+  { name: "STORM",        scoreLen: 600,  sky: ["#060610","#0a0a1a","#101028"], starAlpha: 0.02, moonAlpha: 0.02, haze: "rgba(100,100,180,0.05)", roadGlow: "#6666ff" },
+  { name: "PRE-DAWN",     scoreLen: 400,  sky: ["#0a0410","#160820","#201038"], starAlpha: 0.35, moonAlpha: 0.10, haze: "rgba(100,40,80,0.04)", roadGlow: "#ff44aa" },
+];
+const TIME_CYCLE_LEN = TIME_PERIODS.reduce((s, p) => s + p.scoreLen, 0);
+
+function getCurrentTimePeriod() {
+  let cycleScore = score % TIME_CYCLE_LEN;
+  for (const period of TIME_PERIODS) {
+    if (cycleScore < period.scoreLen) return period;
+    cycleScore -= period.scoreLen;
+  }
+  return TIME_PERIODS[0];
+}
+
+// Get blend factor (0-1) of how far into the current period we are
+function getTimePeriodProgress() {
+  let cycleScore = score % TIME_CYCLE_LEN;
+  for (const period of TIME_PERIODS) {
+    if (cycleScore < period.scoreLen) return cycleScore / period.scoreLen;
+    cycleScore -= period.scoreLen;
+  }
+  return 0;
+}
+
+// ── Weather state ──
+let weatherParticles = [];
+let lightningTimer = 0;
+let lightningFlash = 0;
+
 const PLAYER_WIDTH = 36;
 const PLAYER_HEIGHT = 50;
 const DUCK_HEIGHT = 25;
@@ -299,6 +337,9 @@ function startGame() {
   tunnelExitGrace = 0;
   wasUnderground = false;
   difficultyTier = "";
+  weatherParticles = [];
+  lightningTimer = 0;
+  lightningFlash = 0;
   touchHintTimer = isTouchDevice ? 120 : 0; // ~2 seconds of touch hints
   generateBuildings();
 
@@ -956,16 +997,32 @@ function updateParticles() {
 // ---------- DRAWING ----------
 
 function drawSky() {
-  // Gradient sky
+  const period = getCurrentTimePeriod();
   const grad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
-  grad.addColorStop(0, "#050510");
-  grad.addColorStop(0.5, "#0a0a20");
-  grad.addColorStop(1, "#101030");
+  grad.addColorStop(0, period.sky[0]);
+  grad.addColorStop(0.5, period.sky[1]);
+  grad.addColorStop(1, period.sky[2]);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, canvas.width, GROUND_Y);
+
+  // Atmospheric haze overlay
+  if (period.haze) {
+    ctx.fillStyle = period.haze;
+    ctx.fillRect(0, 0, canvas.width, GROUND_Y);
+  }
+
+  // Lightning flash overlay (for STORM period)
+  if (lightningFlash > 0) {
+    ctx.fillStyle = `rgba(200, 200, 255, ${lightningFlash * 0.3})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    lightningFlash *= 0.85;
+    if (lightningFlash < 0.01) lightningFlash = 0;
+  }
 }
 
 function drawStars() {
+  const period = getCurrentTimePeriod();
+  if (period.starAlpha < 0.03) return; // no stars in heavy weather
   const starSeed = [
     [50, 20], [150, 40], [250, 15], [370, 35], [480, 25],
     [560, 50], [650, 18], [720, 42], [100, 55], [310, 48],
@@ -974,7 +1031,7 @@ function drawStars() {
   ];
   for (const [sx, sy] of starSeed) {
     const flicker = 0.3 + Math.sin(Date.now() / 800 + sx * 0.5) * 0.25;
-    ctx.globalAlpha = flicker;
+    ctx.globalAlpha = flicker * period.starAlpha;
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(sx, sy, 1.5, 1.5);
   }
@@ -982,17 +1039,150 @@ function drawStars() {
 }
 
 function drawMoon() {
+  const period = getCurrentTimePeriod();
+  if (period.moonAlpha < 0.03) return; // hidden during storms/rain
   ctx.save();
-  ctx.globalAlpha = 0.15;
+  ctx.globalAlpha = period.moonAlpha;
   ctx.fillStyle = "#ff88cc";
   ctx.beginPath();
   ctx.arc(680, 50, 25, 0, Math.PI * 2);
   ctx.fill();
-  ctx.globalAlpha = 0.08;
+  ctx.globalAlpha = period.moonAlpha * 0.5;
   ctx.fillStyle = "#ff00ff";
   ctx.beginPath();
   ctx.arc(680, 50, 40, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
+}
+
+function updateWeather() {
+  const period = getCurrentTimePeriod();
+
+  // === Acid Rain ===
+  if (period.name === "ACID RAIN") {
+    // Spawn rain drops
+    if (weatherParticles.length < 80) {
+      for (let i = 0; i < 3; i++) {
+        weatherParticles.push({
+          type: "rain",
+          x: Math.random() * (canvas.width + 100) - 50,
+          y: -10 - Math.random() * 40,
+          vx: -1.5 - Math.random(),
+          vy: 6 + Math.random() * 4,
+          len: 8 + Math.random() * 6,
+          life: 1,
+        });
+      }
+    }
+  }
+
+  // === Neon Fog ===
+  if (period.name === "NEON FOG") {
+    if (weatherParticles.length < 25) {
+      weatherParticles.push({
+        type: "fog",
+        x: canvas.width + Math.random() * 100,
+        y: 50 + Math.random() * (GROUND_Y - 80),
+        radius: 30 + Math.random() * 50,
+        vx: -0.5 - Math.random() * 0.8,
+        alpha: 0.03 + Math.random() * 0.04,
+        hue: Math.random() > 0.5 ? 280 : 300,
+        life: 1,
+      });
+    }
+  }
+
+  // === Storm (lightning + heavy rain) ===
+  if (period.name === "STORM") {
+    // Heavy rain
+    if (weatherParticles.length < 120) {
+      for (let i = 0; i < 5; i++) {
+        weatherParticles.push({
+          type: "rain",
+          x: Math.random() * (canvas.width + 100) - 50,
+          y: -10 - Math.random() * 40,
+          vx: -2 - Math.random() * 2,
+          vy: 8 + Math.random() * 5,
+          len: 10 + Math.random() * 8,
+          life: 1,
+        });
+      }
+    }
+    // Lightning
+    lightningTimer--;
+    if (lightningTimer <= 0) {
+      lightningFlash = 0.6 + Math.random() * 0.4;
+      lightningTimer = 120 + Math.random() * 300; // every 2-7 seconds
+    }
+  }
+
+  // Update and cull particles
+  for (let i = weatherParticles.length - 1; i >= 0; i--) {
+    const p = weatherParticles[i];
+    p.x += p.vx || 0;
+    p.y += (p.vy || 0);
+    if (p.type === "rain" && p.y > GROUND_Y) {
+      weatherParticles.splice(i, 1);
+    } else if (p.type === "fog" && p.x + p.radius < -50) {
+      weatherParticles.splice(i, 1);
+    }
+  }
+
+  // Clean up particles when weather changes
+  if (period.name !== "ACID RAIN" && period.name !== "STORM") {
+    weatherParticles = weatherParticles.filter(p => p.type !== "rain");
+  }
+  if (period.name !== "NEON FOG") {
+    weatherParticles = weatherParticles.filter(p => p.type !== "fog");
+  }
+}
+
+function drawWeather() {
+  const period = getCurrentTimePeriod();
+  ctx.save();
+
+  for (const p of weatherParticles) {
+    if (p.type === "rain") {
+      // Acid rain = green tint, storm rain = blue-white
+      if (period.name === "ACID RAIN") {
+        ctx.strokeStyle = "rgba(0, 255, 100, 0.35)";
+      } else {
+        ctx.strokeStyle = "rgba(150, 170, 220, 0.3)";
+      }
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + p.vx * 0.5, p.y + p.len);
+      ctx.stroke();
+    } else if (p.type === "fog") {
+      ctx.fillStyle = `hsla(${p.hue}, 60%, 50%, ${p.alpha})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Storm: draw lightning bolt on flash
+  if (period.name === "STORM" && lightningFlash > 0.3) {
+    ctx.save();
+    ctx.strokeStyle = `rgba(200, 200, 255, ${lightningFlash * 0.7})`;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = "#aaaaff";
+    ctx.shadowBlur = 15;
+    const boltX = 100 + Math.random() * (canvas.width - 200);
+    let bx = boltX, by = 0;
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    while (by < GROUND_Y - 20) {
+      bx += (Math.random() - 0.5) * 30;
+      by += 15 + Math.random() * 25;
+      ctx.lineTo(bx, Math.min(by, GROUND_Y - 10));
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
   ctx.restore();
 }
 
@@ -1066,7 +1256,8 @@ function drawGround() {
 
   // Neon road line (break at tunnel entrance/exit)
   const t = Date.now() / 1000;
-  ctx.strokeStyle = "#ff00ff";
+  const period = getCurrentTimePeriod();
+  ctx.strokeStyle = period.roadGlow;
   ctx.lineWidth = 2;
   ctx.globalAlpha = 0.6 + Math.sin(t * 3) * 0.2;
   if (tunnel) {
@@ -1087,11 +1278,13 @@ function drawGround() {
   }
   ctx.globalAlpha = 1;
 
-  // Glow under the road line
-  const roadGlow = ctx.createLinearGradient(0, GROUND_Y, 0, GROUND_Y + 8);
-  roadGlow.addColorStop(0, "rgba(255, 0, 255, 0.2)");
-  roadGlow.addColorStop(1, "rgba(255, 0, 255, 0)");
-  ctx.fillStyle = roadGlow;
+  // Glow under the road line (match current time-of-day road color)
+  const rgHex = period.roadGlow;
+  const rgR = parseInt(rgHex.slice(1,3), 16), rgG = parseInt(rgHex.slice(3,5), 16), rgB = parseInt(rgHex.slice(5,7), 16);
+  const roadGlowGrad = ctx.createLinearGradient(0, GROUND_Y, 0, GROUND_Y + 8);
+  roadGlowGrad.addColorStop(0, `rgba(${rgR}, ${rgG}, ${rgB}, 0.2)`);
+  roadGlowGrad.addColorStop(1, `rgba(${rgR}, ${rgG}, ${rgB}, 0)`);
+  ctx.fillStyle = roadGlowGrad;
   ctx.fillRect(0, GROUND_Y, canvas.width, 8);
 
   // Dashed center line
@@ -1936,6 +2129,24 @@ function drawHUD() {
     ctx.restore();
   }
 
+  // Time-of-day / weather label
+  if (state === "playing" && !playerUnderground) {
+    const period = getCurrentTimePeriod();
+    const timeColors = {
+      "DUSK": "#cc66aa", "NIGHT": "#6666aa", "MIDNIGHT": "#8844cc",
+      "ACID RAIN": "#00ff66", "LATE NIGHT": "#6666aa", "NEON FOG": "#cc44ff",
+      "STORM": "#6688ff", "PRE-DAWN": "#cc6688",
+    };
+    ctx.save();
+    ctx.font = "7px 'Courier New', monospace";
+    ctx.textAlign = "right";
+    ctx.fillStyle = timeColors[period.name] || "#666688";
+    ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 600) * 0.15;
+    ctx.fillText(period.name, canvas.width - 40, 38);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
   // Double jump indicator
   if (player.canDoubleJump) {
     const maxJumps = 2;
@@ -2030,6 +2241,7 @@ function draw() {
   drawMoon();
   drawCityLayer(farBuildings, 0.15, 0.5);
   drawCityLayer(buildings, 0.4, 0.7);
+  drawWeather(); // rain/fog/lightning between buildings and ground
   drawGround();
   drawTunnel();
 
@@ -2183,6 +2395,7 @@ function update() {
   updateObstacles();
   checkCollisions();
   updateParticles();
+  updateWeather();
 
   document.getElementById("score-display").textContent =
     "SCORE " + String(Math.floor(score)).padStart(6, "0");
