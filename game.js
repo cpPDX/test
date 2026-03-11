@@ -34,6 +34,9 @@ const JETPACK_MAX_FUEL = 100;
 const JETPACK_BURN_RATE = 1.2;    // per frame (~83 frames = ~1.4 sec)
 const JETPACK_RECHARGE_RATE = 0.8; // per frame on ground
 
+// Mobile / touch detection
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
 // Leaderboard helpers (localStorage)
 function loadLeaderboard() {
   try {
@@ -82,6 +85,7 @@ let gameOverTime = 0; // timestamp to prevent instant restart
 let difficultyTier = ""; // current difficulty tier label
 let initialsEntry = { chars: [65, 65, 65], pos: 0 }; // for arcade initials input
 let resumeGraceFrames = 0; // brief collision immunity after unpausing
+let touchHintTimer = 0; // frames to show touch zone hints after game start
 
 // Jetpack state
 let jetpackUnlocked = false;
@@ -186,11 +190,7 @@ document.addEventListener("keydown", (e) => {
     } else if (e.code === "ArrowRight") {
       initialsEntry.pos = Math.min(2, initialsEntry.pos + 1);
     } else if (e.code === "Enter") {
-      const initials = String.fromCharCode(...initialsEntry.chars);
-      insertScore(initials, Math.floor(score));
-      state = "gameover";
-      gameOverTime = performance.now();
-      showGameOverScreen();
+      confirmInitials();
     }
     e.preventDefault();
     return;
@@ -213,11 +213,23 @@ document.addEventListener("keyup", (e) => {
   keys[e.code] = false;
 });
 
+// Convert touch/click position from screen coords to canvas-internal coords
+function screenToCanvas(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return {
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY,
+  };
+}
+
+// Touch/click handling for gameplay
 canvas.addEventListener("touchstart", (e) => {
   e.preventDefault();
   const touch = e.touches[0];
-  const rect = canvas.getBoundingClientRect();
-  const y = touch.clientY - rect.top;
+  const pos = screenToCanvas(touch.clientX, touch.clientY);
+
   if (state === "start") {
     startGame();
     return;
@@ -226,9 +238,14 @@ canvas.addEventListener("touchstart", (e) => {
     startGame();
     return;
   }
+  if (state === "entering_initials") {
+    handleInitialsTouch(pos.x, pos.y);
+    return;
+  }
   if (state === "paused") return;
   if (state !== "playing") return;
-  if (y < canvas.height / 2) {
+
+  if (pos.y < canvas.height / 2) {
     justPressed["ArrowUp"] = true;
     keys["ArrowUp"] = true;
   } else {
@@ -241,6 +258,14 @@ canvas.addEventListener("touchend", (e) => {
   keys["ArrowUp"] = false;
   keys["ArrowDown"] = false;
 });
+
+function confirmInitials() {
+  const initials = String.fromCharCode(...initialsEntry.chars);
+  insertScore(initials, Math.floor(score));
+  state = "gameover";
+  gameOverTime = performance.now();
+  showGameOverScreen();
+}
 
 function startGame() {
   state = "playing";
@@ -268,11 +293,21 @@ function startGame() {
   playerUnderground = false;
   tunnelObstacleTimer = 0;
   difficultyTier = "";
+  touchHintTimer = isTouchDevice ? 120 : 0; // ~2 seconds of touch hints
   generateBuildings();
 
   document.getElementById("start-screen").classList.add("hidden");
   document.getElementById("game-over-screen").classList.add("hidden");
   document.getElementById("pause-screen").classList.add("hidden");
+
+  // Show touch zone overlay briefly on mobile
+  if (isTouchDevice) {
+    const touchControls = document.getElementById("touch-controls");
+    touchControls.classList.remove("hidden");
+    const pauseBtn = document.getElementById("pause-btn-mobile");
+    pauseBtn.classList.remove("hidden");
+    setTimeout(() => { touchControls.classList.add("hidden"); }, 2000);
+  }
 }
 
 function pauseGame() {
@@ -319,6 +354,9 @@ function quitGame() {
   document.getElementById("game-over-screen").classList.add("hidden");
   document.getElementById("start-screen").classList.remove("hidden");
   document.getElementById("score-display").textContent = "SCORE 000000";
+  if (isTouchDevice) {
+    document.getElementById("pause-btn-mobile").classList.add("hidden");
+  }
   renderLeaderboardHTML("start-leaderboard");
 }
 
@@ -326,29 +364,25 @@ function quitGame() {
 document.getElementById("resume-btn").addEventListener("click", resumeGame);
 document.getElementById("quit-btn").addEventListener("click", quitGame);
 
-// Mobile pause button (double-tap detection via dedicated area handled by Esc key)
-// For mobile: add a pause touch zone (top-left corner tap)
-canvas.addEventListener("touchstart", function pauseTouchHandler(e) {
-  const touch = e.touches[0];
-  const rect = canvas.getBoundingClientRect();
-  const x = touch.clientX - rect.left;
-  const y = touch.clientY - rect.top;
-  // Tap top-right corner (near pause icon) or top-left (near SPD) to toggle pause
-  const relX = x / rect.width;
-  if ((relX > 0.85 && y < 35) || (x < 80 && y < 35)) {
-    if (state === "playing") {
-      pauseGame();
-      e.preventDefault();
-      e.stopPropagation();
-    }
+// Mobile pause button
+document.getElementById("pause-btn-mobile").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (state === "playing") {
+    pauseGame();
   }
-}, true);
+});
+document.getElementById("pause-btn-mobile").addEventListener("touchstart", (e) => {
+  e.stopPropagation();
+});
 
 function showGameOverScreen() {
   document.getElementById("final-score").textContent = "Score: " + Math.floor(score);
   document.getElementById("high-score").textContent = "Best: " + Math.floor(highScore);
   renderLeaderboardHTML("game-over-leaderboard");
   document.getElementById("game-over-screen").classList.remove("hidden");
+  if (isTouchDevice) {
+    document.getElementById("pause-btn-mobile").classList.add("hidden");
+  }
 }
 
 function gameOver() {
@@ -379,6 +413,55 @@ function gameOver() {
     state = "gameover";
     gameOverTime = performance.now();
     showGameOverScreen();
+  }
+}
+
+// Touch handling for initials entry screen
+function handleInitialsTouch(cx, cy) {
+  const canvasCX = canvas.width / 2;
+  const boxW = 40;
+  const boxH = 50;
+  const gap = 12;
+  const startX = canvasCX - (boxW * 3 + gap * 2) / 2;
+  const boxY = 155;
+
+  // Check if tapping on a letter box to select it
+  for (let i = 0; i < 3; i++) {
+    const bx = startX + i * (boxW + gap);
+    if (cx >= bx && cx <= bx + boxW && cy >= boxY && cy <= boxY + boxH) {
+      initialsEntry.pos = i;
+      return;
+    }
+  }
+
+  // Check up arrows (above boxes)
+  for (let i = 0; i < 3; i++) {
+    const bx = startX + i * (boxW + gap);
+    if (cx >= bx && cx <= bx + boxW && cy >= boxY - 30 && cy < boxY) {
+      initialsEntry.pos = i;
+      initialsEntry.chars[i] = (initialsEntry.chars[i] - 65 + 1) % 26 + 65;
+      return;
+    }
+  }
+
+  // Check down arrows (below boxes)
+  for (let i = 0; i < 3; i++) {
+    const bx = startX + i * (boxW + gap);
+    if (cx >= bx && cx <= bx + boxW && cy > boxY + boxH && cy <= boxY + boxH + 30) {
+      initialsEntry.pos = i;
+      initialsEntry.chars[i] = (initialsEntry.chars[i] - 65 + 25) % 26 + 65;
+      return;
+    }
+  }
+
+  // Check confirm button
+  const confirmY = boxY + boxH + 45;
+  const confirmW = 140;
+  const confirmH = 36;
+  const confirmX = canvasCX - confirmW / 2;
+  if (cx >= confirmX && cx <= confirmX + confirmW && cy >= confirmY && cy <= confirmY + confirmH) {
+    confirmInitials();
+    return;
   }
 }
 
@@ -1196,7 +1279,6 @@ function drawParticles() {
     ctx.globalAlpha = Math.max(0, p.life);
     ctx.fillStyle = p.color;
     ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
-
     // Glow for bright particles
     if (p.life > 0.5 && p.size > 2) {
       ctx.globalAlpha = p.life * 0.2;
@@ -1264,32 +1346,53 @@ function drawInitialsEntry() {
     ctx.fillText(String.fromCharCode(initialsEntry.chars[i]), bx + boxW / 2, boxY + 35);
     ctx.shadowBlur = 0;
 
-    // Up/down arrows for active position
-    if (isActive) {
-      ctx.fillStyle = "#00ffcc";
-      ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 300) * 0.4;
-      // Up arrow
-      ctx.beginPath();
-      ctx.moveTo(bx + boxW / 2, boxY - 12);
-      ctx.lineTo(bx + boxW / 2 - 6, boxY - 4);
-      ctx.lineTo(bx + boxW / 2 + 6, boxY - 4);
-      ctx.closePath();
-      ctx.fill();
-      // Down arrow
-      ctx.beginPath();
-      ctx.moveTo(bx + boxW / 2, boxY + boxH + 12);
-      ctx.lineTo(bx + boxW / 2 - 6, boxY + boxH + 4);
-      ctx.lineTo(bx + boxW / 2 + 6, boxY + boxH + 4);
-      ctx.closePath();
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
+    // Up/down arrows for all positions (tappable on mobile)
+    const arrowAlpha = isActive ? (0.6 + Math.sin(Date.now() / 300) * 0.4) : 0.3;
+    ctx.fillStyle = isActive ? "#00ffcc" : "#555566";
+    ctx.globalAlpha = arrowAlpha;
+    // Up arrow
+    ctx.beginPath();
+    ctx.moveTo(bx + boxW / 2, boxY - 12);
+    ctx.lineTo(bx + boxW / 2 - 8, boxY - 2);
+    ctx.lineTo(bx + boxW / 2 + 8, boxY - 2);
+    ctx.closePath();
+    ctx.fill();
+    // Down arrow
+    ctx.beginPath();
+    ctx.moveTo(bx + boxW / 2, boxY + boxH + 14);
+    ctx.lineTo(bx + boxW / 2 - 8, boxY + boxH + 4);
+    ctx.lineTo(bx + boxW / 2 + 8, boxY + boxH + 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
   }
+
+  // Confirm button
+  const confirmY = boxY + boxH + 45;
+  const confirmW = 140;
+  const confirmH = 36;
+  const confirmX = cx - confirmW / 2;
+  const confirmPulse = 0.7 + Math.sin(Date.now() / 400) * 0.3;
+
+  ctx.fillStyle = "rgba(0, 255, 204, 0.08)";
+  ctx.fillRect(confirmX, confirmY, confirmW, confirmH);
+  ctx.strokeStyle = "#00ffcc";
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = confirmPulse;
+  ctx.strokeRect(confirmX, confirmY, confirmW, confirmH);
+  ctx.globalAlpha = 1;
+  ctx.font = "bold 14px 'Courier New', monospace";
+  ctx.fillStyle = "#00ffcc";
+  ctx.fillText("CONFIRM", cx, confirmY + 23);
 
   // Instructions
   ctx.font = "10px 'Courier New', monospace";
   ctx.fillStyle = "#555566";
-  ctx.fillText("UP/DOWN: Letter  |  LEFT/RIGHT: Move  |  ENTER: Confirm", cx, boxY + boxH + 30);
+  if (isTouchDevice) {
+    ctx.fillText("Tap arrows to change  |  Tap letter to select  |  Tap CONFIRM", cx, confirmY + confirmH + 18);
+  } else {
+    ctx.fillText("UP/DOWN: Letter  |  LEFT/RIGHT: Move  |  ENTER: Confirm", cx, confirmY + confirmH + 18);
+  }
 
   ctx.restore();
 }
@@ -1392,12 +1495,41 @@ function drawHUD() {
     ctx.fillText("JET", 14, fuelY + 12);
   }
 
-  // Pause icon (tap target for mobile)
-  ctx.fillStyle = "#555566";
-  ctx.globalAlpha = 0.5;
-  ctx.fillRect(canvas.width - 30, 12, 4, 12);
-  ctx.fillRect(canvas.width - 22, 12, 4, 12);
-  ctx.globalAlpha = 1;
+  // Touch zone hint (fades out)
+  if (isTouchDevice && touchHintTimer > 0) {
+    const hintAlpha = Math.min(0.4, touchHintTimer / 120 * 0.4);
+
+    // Divider line
+    ctx.strokeStyle = "#00ffcc";
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = hintAlpha * 0.5;
+    ctx.setLineDash([8, 8]);
+    ctx.beginPath();
+    ctx.moveTo(0, canvas.height / 2);
+    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Labels
+    ctx.font = "bold 16px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.globalAlpha = hintAlpha;
+    ctx.fillStyle = "#00ffcc";
+    ctx.fillText("TAP TO JUMP", canvas.width / 2, canvas.height / 2 - 30);
+    ctx.fillStyle = "#ff00ff";
+    ctx.fillText("TAP TO SLIDE", canvas.width / 2, canvas.height / 2 + 45);
+    ctx.textAlign = "left";
+    ctx.globalAlpha = 1;
+  }
+
+  // Pause icon (desktop only — mobile uses the HTML button)
+  if (!isTouchDevice) {
+    ctx.fillStyle = "#555566";
+    ctx.globalAlpha = 0.5;
+    ctx.fillRect(canvas.width - 30, 12, 4, 12);
+    ctx.fillRect(canvas.width - 22, 12, 4, 12);
+    ctx.globalAlpha = 1;
+  }
 }
 
 function draw() {
@@ -1508,6 +1640,9 @@ function update() {
     updateParticles();
     return;
   }
+
+  // Decrement touch hint timer
+  if (touchHintTimer > 0) touchHintTimer--;
 
   // Progressive speed: gentle while unlocking mechanics, then ramps up
   let speedIncrement = 0.001;
