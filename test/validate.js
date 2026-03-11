@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const htmlDir = path.join(__dirname, "..", "HelloWorld");
+const htmlDir = path.join(__dirname, "..");
 let failures = 0;
 
 // Validate HTML files
