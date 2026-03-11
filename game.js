@@ -21,6 +21,13 @@ const SPEED_TIER_SCORE = 1500;
 const FAST_DRONE_SCORE = 2000;
 const COMBO_OBSTACLE_SCORE = 2500;
 
+// ── Shooting / projectile constants ──
+const BULLET_SPEED = 10;
+const BULLET_WIDTH = 12;
+const BULLET_HEIGHT = 3;
+const SHOOT_COOLDOWN = 12; // frames between shots (~0.2s)
+const DRONE_KILL_SCORE = 50;
+
 // ── Time-of-day cycle ──
 // Each "period" lasts a score range. The cycle loops.
 const TIME_PERIODS = [
@@ -140,6 +147,13 @@ let tunnelObstacleTimer = 0;
 let tunnelExitGrace = 0;  // frames of obstacle-spawn grace after exiting tunnel
 let wasUnderground = false; // track transition for grace period
 
+// Shooting state
+let projectiles = [];   // { x, y, vx }
+let shootCooldown = 0;
+let droneKills = 0;     // total drones destroyed this run
+let killFlashTimer = 0; // screen flash on kill
+let lastKillText = "";  // "+50" popup
+
 // City background layers (parallax)
 const buildings = [];
 const farBuildings = [];
@@ -246,8 +260,12 @@ document.addEventListener("keydown", (e) => {
     startGame();
     e.preventDefault();
   }
-  if (["Space", "ArrowUp", "ArrowDown", "KeyW", "KeyS"].includes(e.code)) {
+  if (["Space", "ArrowUp", "ArrowDown", "KeyW", "KeyS", "Tab"].includes(e.code)) {
     e.preventDefault();
+  }
+  // Shoot on Tab key
+  if (e.code === "Tab" && state === "playing") {
+    shootProjectile();
   }
 });
 
@@ -287,7 +305,10 @@ canvas.addEventListener("touchstart", (e) => {
   if (state === "paused") return;
   if (state !== "playing") return;
 
-  if (pos.y < canvas.height / 2) {
+  // Right third of screen = shoot, left two-thirds = jump/duck
+  if (pos.x > canvas.width * 0.66) {
+    shootProjectile();
+  } else if (pos.y < canvas.height / 2) {
     justPressed["ArrowUp"] = true;
     keys["ArrowUp"] = true;
   } else {
@@ -340,6 +361,11 @@ function startGame() {
   weatherParticles = [];
   lightningTimer = 0;
   lightningFlash = 0;
+  projectiles = [];
+  shootCooldown = 0;
+  droneKills = 0;
+  killFlashTimer = 0;
+  lastKillText = "";
   touchHintTimer = isTouchDevice ? 120 : 0; // ~2 seconds of touch hints
   generateBuildings();
 
@@ -603,6 +629,90 @@ function getGroundAt(x) {
   // Exit ramp: interpolate from UNDERGROUND_Y back up to GROUND_Y
   const pct = (x - bodyEnd) / t.exitWidth;
   return UNDERGROUND_Y + (GROUND_Y - UNDERGROUND_Y) * pct;
+}
+
+function shootProjectile() {
+  if (shootCooldown > 0) return;
+  projectiles.push({
+    x: player.x + player.width,
+    y: player.y + player.height / 2 - BULLET_HEIGHT / 2,
+    vx: BULLET_SPEED + gameSpeed,
+    life: 1,
+  });
+  shootCooldown = SHOOT_COOLDOWN;
+  // Muzzle flash particles
+  for (let i = 0; i < 5; i++) {
+    particles.push({
+      x: player.x + player.width + 4,
+      y: player.y + player.height / 2,
+      vx: 2 + Math.random() * 4,
+      vy: (Math.random() - 0.5) * 3,
+      life: 0.3,
+      size: 2 + Math.random() * 2,
+      color: ["#00ffcc", "#ffaa00", "#ffffff"][Math.floor(Math.random() * 3)],
+    });
+  }
+}
+
+function updateProjectiles() {
+  if (shootCooldown > 0) shootCooldown--;
+  if (killFlashTimer > 0) killFlashTimer--;
+
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const b = projectiles[i];
+    b.x += b.vx;
+    b.life -= 0.008;
+
+    // Check collision with drones
+    for (let j = obstacles.length - 1; j >= 0; j--) {
+      const obs = obstacles[j];
+      if (obs.type !== "drone") continue;
+      if (b.x + BULLET_WIDTH > obs.x && b.x < obs.x + obs.width &&
+          b.y + BULLET_HEIGHT > obs.y && b.y < obs.y + obs.height) {
+        // Drone destroyed!
+        droneKills++;
+        score += DRONE_KILL_SCORE;
+        killFlashTimer = 8;
+        lastKillText = "+" + DRONE_KILL_SCORE;
+
+        // Explosion particles
+        for (let p = 0; p < 18; p++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 1.5 + Math.random() * 4;
+          particles.push({
+            x: obs.x + obs.width / 2,
+            y: obs.y + obs.height / 2,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 0.7 + Math.random() * 0.3,
+            size: 2 + Math.random() * 3,
+            color: ["#ff4444", "#ff6600", "#ffaa00", "#ff0044", "#ffffff"][Math.floor(Math.random() * 5)],
+          });
+        }
+        // Debris particles (darker, slower)
+        for (let p = 0; p < 8; p++) {
+          particles.push({
+            x: obs.x + Math.random() * obs.width,
+            y: obs.y + Math.random() * obs.height,
+            vx: (Math.random() - 0.5) * 3,
+            vy: 1 + Math.random() * 2,
+            life: 0.5,
+            size: 2 + Math.random() * 2,
+            color: "#333344",
+          });
+        }
+
+        obstacles.splice(j, 1);
+        projectiles.splice(i, 1);
+        break;
+      }
+    }
+
+    // Remove if off-screen or expired
+    if (i < projectiles.length && (projectiles[i].x > canvas.width + 20 || projectiles[i].life <= 0)) {
+      projectiles.splice(i, 1);
+    }
+  }
 }
 
 function updatePlayer() {
@@ -1526,6 +1636,26 @@ function drawObstacle(obs) {
     ctx.fillStyle = "#ff0044";
     ctx.fillRect(obs.x + 5, obs.y - 4, obs.width - 10, obs.height + 8);
     ctx.globalAlpha = 1;
+
+    // Target reticle — pulsing circle around drone
+    const reticleAlpha = 0.2 + Math.sin(t / 150) * 0.15;
+    ctx.strokeStyle = "#ff0044";
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = reticleAlpha;
+    const cx = obs.x + obs.width / 2;
+    const cy = obs.y + obs.height / 2;
+    const rr = 18 + Math.sin(t / 200) * 3;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rr, 0, Math.PI * 2);
+    ctx.stroke();
+    // Crosshair ticks
+    ctx.beginPath();
+    ctx.moveTo(cx - rr - 3, cy); ctx.lineTo(cx - rr + 4, cy);
+    ctx.moveTo(cx + rr - 4, cy); ctx.lineTo(cx + rr + 3, cy);
+    ctx.moveTo(cx, cy - rr - 3); ctx.lineTo(cx, cy - rr + 4);
+    ctx.moveTo(cx, cy + rr - 4); ctx.lineTo(cx, cy + rr + 3);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   } else if (obs.type === "pipe") {
     // Underground pipe — horizontal, industrial
     ctx.fillStyle = "#2a3a2a";
@@ -1959,6 +2089,45 @@ function drawTunnel() {
   ctx.restore();
 }
 
+function drawProjectiles() {
+  ctx.save();
+  for (const b of projectiles) {
+    const t = Date.now();
+    // Neon bullet core
+    ctx.fillStyle = "#00ffcc";
+    ctx.globalAlpha = 0.9 * b.life;
+    ctx.fillRect(b.x, b.y, BULLET_WIDTH, BULLET_HEIGHT);
+    // Bright center line
+    ctx.fillStyle = "#ffffff";
+    ctx.globalAlpha = 0.7 * b.life;
+    ctx.fillRect(b.x + 2, b.y + 1, BULLET_WIDTH - 4, 1);
+    // Glow trail
+    ctx.fillStyle = "#00ffcc";
+    ctx.globalAlpha = 0.15 * b.life;
+    ctx.fillRect(b.x - 8, b.y - 2, BULLET_WIDTH + 8, BULLET_HEIGHT + 4);
+    // Trailing particles (small)
+    ctx.fillStyle = "#00ffcc";
+    ctx.globalAlpha = 0.3 * b.life;
+    ctx.fillRect(b.x - 4 - Math.random() * 6, b.y + Math.random() * BULLET_HEIGHT, 3, 1);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawKillPopup() {
+  if (killFlashTimer > 0 && lastKillText) {
+    ctx.save();
+    ctx.font = "bold 14px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ff4444";
+    ctx.globalAlpha = killFlashTimer / 8;
+    const popY = player.y - 20 - (8 - killFlashTimer) * 2;
+    ctx.fillText(lastKillText, player.x + player.width / 2, popY);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+}
+
 function drawParticles() {
   for (const p of particles) {
     ctx.globalAlpha = Math.max(0, p.life);
@@ -2198,29 +2367,58 @@ function drawHUD() {
     ctx.fillText("JET", 14, fuelY + 12);
   }
 
+  // Drone kills counter
+  if (droneKills > 0) {
+    const killY = jetpackUnlocked ? (player.canDoubleJump ? 64 : 52) : (player.canDoubleJump ? 50 : 38);
+    ctx.fillStyle = "#ff4444";
+    ctx.globalAlpha = 0.7;
+    ctx.font = "8px 'Courier New', monospace";
+    ctx.fillText("KILLS " + droneKills, 14, killY);
+    ctx.globalAlpha = 1;
+  }
+
+  // Shoot cooldown indicator (small bar near player)
+  if (shootCooldown > 0) {
+    ctx.fillStyle = "#00ffcc";
+    ctx.globalAlpha = 0.3;
+    const cdPct = shootCooldown / SHOOT_COOLDOWN;
+    ctx.fillRect(player.x, player.y - 6, player.width * (1 - cdPct), 2);
+    ctx.globalAlpha = 1;
+  }
+
   // Touch zone hint (fades out)
   if (isTouchDevice && touchHintTimer > 0) {
     const hintAlpha = Math.min(0.4, touchHintTimer / 120 * 0.4);
 
-    // Divider line
+    // Horizontal divider
     ctx.strokeStyle = "#00ffcc";
     ctx.lineWidth = 1;
     ctx.globalAlpha = hintAlpha * 0.5;
     ctx.setLineDash([8, 8]);
     ctx.beginPath();
     ctx.moveTo(0, canvas.height / 2);
-    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.lineTo(canvas.width * 0.66, canvas.height / 2);
+    ctx.stroke();
+
+    // Vertical divider for shoot zone
+    ctx.strokeStyle = "#ff4444";
+    ctx.beginPath();
+    ctx.moveTo(canvas.width * 0.66, 0);
+    ctx.lineTo(canvas.width * 0.66, canvas.height);
     ctx.stroke();
     ctx.setLineDash([]);
 
     // Labels
-    ctx.font = "bold 16px 'Courier New', monospace";
+    ctx.font = "bold 14px 'Courier New', monospace";
     ctx.textAlign = "center";
     ctx.globalAlpha = hintAlpha;
     ctx.fillStyle = "#00ffcc";
-    ctx.fillText("TAP TO JUMP", canvas.width / 2, canvas.height / 2 - 30);
+    ctx.fillText("TAP TO JUMP", canvas.width * 0.33, canvas.height / 2 - 30);
     ctx.fillStyle = "#ff00ff";
-    ctx.fillText("TAP TO SLIDE", canvas.width / 2, canvas.height / 2 + 45);
+    ctx.fillText("TAP TO SLIDE", canvas.width * 0.33, canvas.height / 2 + 45);
+    ctx.fillStyle = "#ff4444";
+    ctx.fillText("TAP TO", canvas.width * 0.83, canvas.height / 2 - 10);
+    ctx.fillText("SHOOT", canvas.width * 0.83, canvas.height / 2 + 10);
     ctx.textAlign = "left";
     ctx.globalAlpha = 1;
   }
@@ -2266,8 +2464,10 @@ function draw() {
     }
   }
 
+  drawProjectiles();
   drawParticles();
   drawHUD();
+  drawKillPopup();
 
   if (state === "entering_initials") {
     drawInitialsEntry();
@@ -2393,6 +2593,7 @@ function update() {
   updatePlayer();
   updateTunnel();
   updateObstacles();
+  updateProjectiles();
   checkCollisions();
   updateParticles();
   updateWeather();
