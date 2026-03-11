@@ -11,18 +11,20 @@ const JUMP_FORCE = -13;
 const INITIAL_SPEED = 5;
 const MAX_SPEED = 14;
 
-// Difficulty milestones
-const SPEED_TIER_SCORE = 750;
-const FAST_DRONE_SCORE = 1000;
-const COMBO_OBSTACLE_SCORE = 1500;
+// Difficulty milestones – mechanics unlock before speed ramps up
+const TUNNEL_SCORE = 400;         // Score to start spawning underground tunnels
+const ADVANCED_PHASE_SCORE = 800; // Score threshold to unlock double jump + firewalls
+const JETPACK_SCORE = 1200;       // Score to unlock jetpack hover
+
+// Speed / intensity milestones (kick in after all mechanics are available)
+const SPEED_TIER_SCORE = 1500;
+const FAST_DRONE_SCORE = 2000;
+const COMBO_OBSTACLE_SCORE = 2500;
 
 const PLAYER_WIDTH = 36;
 const PLAYER_HEIGHT = 50;
 const DUCK_HEIGHT = 25;
 const DOUBLE_JUMP_FORCE = -11;
-const ADVANCED_PHASE_SCORE = 500; // Score threshold to unlock double jump
-const TUNNEL_SCORE = 2000;        // Score to start spawning underground tunnels
-const JETPACK_SCORE = 3000;       // Score to unlock jetpack hover
 
 // Underground tunnel constants
 const UNDERGROUND_Y = 340;        // Ground level inside tunnel (50px below GROUND_Y)
@@ -72,6 +74,8 @@ let frameCount = 0;
 let obstacles = [];
 let particles = [];
 let groundOffset = 0;
+let tunnelUnlocked = false;     // tracks if we've shown the tunnel unlock notification
+let tunnelFlashTimer = 0;
 let doubleJumpUnlocked = false; // tracks if we've shown the unlock notification
 let unlockFlashTimer = 0;
 let gameOverTime = 0; // timestamp to prevent instant restart
@@ -252,6 +256,8 @@ function startGame() {
   player.ducking = false;
   player.jumpsUsed = 0;
   player.canDoubleJump = false;
+  tunnelUnlocked = false;
+  tunnelFlashTimer = 0;
   doubleJumpUnlocked = false;
   unlockFlashTimer = 0;
   jetpackUnlocked = false;
@@ -298,6 +304,8 @@ function quitGame() {
   player.ducking = false;
   player.jumpsUsed = 0;
   player.canDoubleJump = false;
+  tunnelUnlocked = false;
+  tunnelFlashTimer = 0;
   tunnel = null;
   playerUnderground = false;
   tunnelObstacleTimer = 0;
@@ -1324,7 +1332,7 @@ function drawHUD() {
       "OVERDRIVE": "#ff0066",
       "TUNNELS": "#00ff66",
       "UNDERGROUND": "#00ff66",
-      "JETPACK": "#ff6600",
+      "HOVER PACK": "#ff6600",
     };
     ctx.fillStyle = tierColors[difficultyTier] || "#00ffcc";
     ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 400) * 0.3;
@@ -1435,6 +1443,25 @@ function draw() {
   }
 
   // Unlock notifications
+  if (tunnelFlashTimer > 0) {
+    const alpha = Math.min(1, tunnelFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = "bold 20px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#00ff66";
+    ctx.globalAlpha = alpha * 0.15;
+    ctx.fillRect(canvas.width / 2 - 140, 60, 280, 35);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "#00ff66";
+    ctx.shadowColor = "#00ff66";
+    ctx.shadowBlur = 15;
+    ctx.fillText("UNDERGROUND UNLOCKED", canvas.width / 2, 84);
+    ctx.shadowBlur = 0;
+    ctx.textAlign = "left";
+    ctx.restore();
+  }
+
   if (unlockFlashTimer > 0) {
     const alpha = Math.min(1, unlockFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
     ctx.save();
@@ -1466,7 +1493,7 @@ function draw() {
     ctx.fillStyle = "#ff6600";
     ctx.shadowColor = "#ff6600";
     ctx.shadowBlur = 15;
-    ctx.fillText("JETPACK UNLOCKED", canvas.width / 2, 84);
+    ctx.fillText("HOVER PACK UNLOCKED", canvas.width / 2, 84);
     ctx.shadowBlur = 0;
     ctx.textAlign = "left";
     ctx.restore();
@@ -1482,30 +1509,38 @@ function update() {
     return;
   }
 
-  // Progressive speed: steeper ramp at higher scores
+  // Progressive speed: gentle while unlocking mechanics, then ramps up
   let speedIncrement = 0.001;
-  if (score >= JETPACK_SCORE) {
+  if (score >= COMBO_OBSTACLE_SCORE) {
     speedIncrement = 0.003;
-    difficultyTier = playerUnderground ? "UNDERGROUND" : "JETPACK";
-  } else if (score >= TUNNEL_SCORE) {
-    speedIncrement = 0.0025;
-    difficultyTier = playerUnderground ? "UNDERGROUND" : "TUNNELS";
-  } else if (score >= COMBO_OBSTACLE_SCORE) {
-    speedIncrement = 0.0025;
-    difficultyTier = "OVERDRIVE";
+    difficultyTier = playerUnderground ? "UNDERGROUND" : "OVERDRIVE";
   } else if (score >= FAST_DRONE_SCORE) {
-    speedIncrement = 0.002;
-    difficultyTier = "DANGER ZONE";
+    speedIncrement = 0.0025;
+    difficultyTier = playerUnderground ? "UNDERGROUND" : "DANGER ZONE";
   } else if (score >= SPEED_TIER_SCORE) {
+    speedIncrement = 0.002;
+    difficultyTier = playerUnderground ? "UNDERGROUND" : "HIGH SPEED";
+  } else if (score >= JETPACK_SCORE) {
     speedIncrement = 0.0015;
-    difficultyTier = "HIGH SPEED";
+    difficultyTier = playerUnderground ? "UNDERGROUND" : "HOVER PACK";
   } else if (score >= ADVANCED_PHASE_SCORE) {
-    difficultyTier = "DOUBLE JUMP";
+    speedIncrement = 0.001;
+    difficultyTier = playerUnderground ? "UNDERGROUND" : "DOUBLE JUMP";
+  } else if (score >= TUNNEL_SCORE) {
+    speedIncrement = 0.001;
+    difficultyTier = playerUnderground ? "UNDERGROUND" : "TUNNELS";
   } else {
     difficultyTier = "";
   }
   gameSpeed = Math.min(MAX_SPEED, INITIAL_SPEED + score * speedIncrement);
   score += gameSpeed * 0.05;
+
+  // Check for tunnel unlock
+  if (!tunnelUnlocked && score >= TUNNEL_SCORE) {
+    tunnelUnlocked = true;
+    tunnelFlashTimer = 180;
+  }
+  if (tunnelFlashTimer > 0) tunnelFlashTimer--;
 
   // Check for double jump unlock
   if (!doubleJumpUnlocked && score >= ADVANCED_PHASE_SCORE) {
