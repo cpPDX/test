@@ -28,6 +28,8 @@ const DOUBLE_JUMP_FORCE = -11;
 
 // Underground tunnel constants
 const UNDERGROUND_Y = 340;        // Ground level inside tunnel (50px below GROUND_Y)
+const TUNNEL_CEILING_Y = 40;      // Top of tunnel visual ceiling for immersive mode
+const TUNNEL_FLOOR_Y = GROUND_Y;  // Floor draws at normal ground level in immersive mode
 
 // Jetpack constants
 const JETPACK_MAX_FUEL = 100;
@@ -97,6 +99,8 @@ let jetpackFlashTimer = 0;
 let tunnel = null;      // { x, entranceWidth, bodyWidth, exitWidth }
 let playerUnderground = false; // is the player currently below GROUND_Y?
 let tunnelObstacleTimer = 0;
+let tunnelExitGrace = 0;  // frames of obstacle-spawn grace after exiting tunnel
+let wasUnderground = false; // track transition for grace period
 
 // City background layers (parallax)
 const buildings = [];
@@ -292,6 +296,8 @@ function startGame() {
   tunnel = null;
   playerUnderground = false;
   tunnelObstacleTimer = 0;
+  tunnelExitGrace = 0;
+  wasUnderground = false;
   difficultyTier = "";
   touchHintTimer = isTouchDevice ? 120 : 0; // ~2 seconds of touch hints
   generateBuildings();
@@ -344,6 +350,8 @@ function quitGame() {
   tunnel = null;
   playerUnderground = false;
   tunnelObstacleTimer = 0;
+  tunnelExitGrace = 0;
+  wasUnderground = false;
   jetpackUnlocked = false;
   jetpackFuel = JETPACK_MAX_FUEL;
   jetpackActive = false;
@@ -521,13 +529,17 @@ function createObstacle() {
     // Tall server rack / electric box
     return { x: canvas.width, y: GROUND_Y - 55, width: 24, height: 55, type: "server" };
   } else {
-    // Drone - duck under
+    // Drone - hovers up and down
     return {
       x: canvas.width,
       y: GROUND_Y - PLAYER_HEIGHT - 18,
+      baseY: GROUND_Y - PLAYER_HEIGHT - 18,
       width: 40,
       height: 20,
       type: "drone",
+      spawnTime: performance.now(),
+      hoverAmp: 18 + Math.random() * 14,   // 18-32px oscillation amplitude
+      hoverSpeed: 1.5 + Math.random() * 1.5, // varied speed
     };
   }
 }
@@ -649,7 +661,13 @@ function updatePlayer() {
   }
 
   // Track if player is underground
+  const prevUnderground = playerUnderground;
   playerUnderground = player.y + player.height > GROUND_Y + 5;
+
+  // Detect tunnel exit transition — grant grace frames
+  if (prevUnderground && !playerUnderground) {
+    tunnelExitGrace = 60; // ~1 second of no obstacle spawns after surfacing
+  }
 
   // Running trail
   player.trailTimer++;
@@ -673,7 +691,7 @@ function updateTunnel() {
       tunnel = {
         x: canvas.width + 100,
         entranceWidth: 60,
-        bodyWidth: 500 + Math.random() * 200,
+        bodyWidth: 900 + Math.random() * 400,
         exitWidth: 60,
       };
     }
@@ -693,7 +711,7 @@ function updateTunnel() {
 // Create an underground-specific obstacle
 function createUndergroundObstacle() {
   const type = Math.random();
-  if (type < 0.5) {
+  if (type < 0.3) {
     // Pipe at head height — duck under
     return {
       x: canvas.width,
@@ -702,7 +720,7 @@ function createUndergroundObstacle() {
       height: 16,
       type: "pipe",
     };
-  } else {
+  } else if (type < 0.55) {
     // Electrified puddle — small, jump over
     return {
       x: canvas.width,
@@ -711,11 +729,42 @@ function createUndergroundObstacle() {
       height: 12,
       type: "puddle_zap",
     };
+  } else if (type < 0.75) {
+    // Laser grid — horizontal beam across path, must duck under
+    return {
+      x: canvas.width,
+      y: UNDERGROUND_Y - PLAYER_HEIGHT + 2,
+      width: 60,
+      height: 30,
+      type: "laser_grid",
+      spawnTime: performance.now(),
+    };
+  } else if (type < 0.9) {
+    // Steam vent — erupts from floor, must jump over
+    return {
+      x: canvas.width,
+      y: UNDERGROUND_Y - 40,
+      width: 20,
+      height: 40,
+      type: "steam_vent",
+      spawnTime: performance.now(),
+    };
+  } else {
+    // Hanging cables — dangle from ceiling, must duck
+    return {
+      x: canvas.width,
+      y: GROUND_Y,
+      width: 30,
+      height: UNDERGROUND_Y - GROUND_Y - DUCK_HEIGHT + 2,
+      type: "hanging_wire",
+      spawnTime: performance.now(),
+    };
   }
 }
 
 function updateObstacles() {
   frameCount++;
+  if (tunnelExitGrace > 0) tunnelExitGrace--;
   const minGap = Math.max(55, 100 - gameSpeed * 3);
 
   if (playerUnderground) {
@@ -726,6 +775,7 @@ function updateObstacles() {
       tunnelObstacleTimer = 0;
     }
   } else if (
+    tunnelExitGrace <= 0 &&
     frameCount > minGap &&
     (obstacles.length === 0 ||
       obstacles[obstacles.length - 1].x < canvas.width - 200 - Math.random() * 150)
@@ -739,9 +789,13 @@ function updateObstacles() {
         obstacles.push({
           x: canvas.width + 120,
           y: GROUND_Y - PLAYER_HEIGHT - 18,
+          baseY: GROUND_Y - PLAYER_HEIGHT - 18,
           width: 40,
           height: 20,
           type: "drone",
+          spawnTime: performance.now(),
+          hoverAmp: 18 + Math.random() * 14,
+          hoverSpeed: 1.5 + Math.random() * 1.5,
         });
       } else {
         obstacles.push(createObstacle());
@@ -751,9 +805,17 @@ function updateObstacles() {
   }
 
   for (let i = obstacles.length - 1; i >= 0; i--) {
-    const speedMult = (obstacles[i].type === "drone" && score >= FAST_DRONE_SCORE) ? 1.4 : 1;
-    obstacles[i].x -= gameSpeed * speedMult;
-    if (obstacles[i].x + obstacles[i].width < 0) {
+    const obs = obstacles[i];
+    const speedMult = (obs.type === "drone" && score >= FAST_DRONE_SCORE) ? 1.4 : 1;
+    obs.x -= gameSpeed * speedMult;
+
+    // Drone vertical hover oscillation
+    if (obs.type === "drone" && obs.baseY !== undefined) {
+      const elapsed = (performance.now() - obs.spawnTime) / 1000;
+      obs.y = obs.baseY + Math.sin(elapsed * obs.hoverSpeed) * obs.hoverAmp;
+    }
+
+    if (obs.x + obs.width < 0) {
       obstacles.splice(i, 1);
     }
   }
@@ -768,7 +830,8 @@ function checkCollisions() {
 
   for (const obs of obstacles) {
     // Skip surface obstacles when player is underground, and vice versa
-    const isUndergroundObs = obs.type === "pipe" || obs.type === "puddle_zap";
+    const isUndergroundObs = obs.type === "pipe" || obs.type === "puddle_zap" ||
+      obs.type === "laser_grid" || obs.type === "steam_vent" || obs.type === "hanging_wire";
     if (playerUnderground && !isUndergroundObs) continue;
     if (!playerUnderground && isUndergroundObs) continue;
 
@@ -1215,6 +1278,81 @@ function drawObstacle(obs) {
     ctx.globalAlpha = 0.08 + zap * 0.04;
     ctx.fillRect(obs.x - 4, obs.y - 8, obs.width + 8, obs.height + 12);
     ctx.globalAlpha = 1;
+  } else if (obs.type === "laser_grid") {
+    // Horizontal laser beams — red scanning lines
+    const elapsed = (t - obs.spawnTime) / 1000;
+    const flicker = Math.sin(elapsed * 8) * 0.3;
+    ctx.strokeStyle = "#ff0033";
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.7 + flicker;
+    // Draw 3 horizontal beams
+    for (let i = 0; i < 3; i++) {
+      const by = obs.y + 5 + i * 10;
+      ctx.beginPath();
+      ctx.moveTo(obs.x, by);
+      ctx.lineTo(obs.x + obs.width, by);
+      ctx.stroke();
+    }
+    // Emitter boxes on sides
+    ctx.fillStyle = "#440011";
+    ctx.globalAlpha = 1;
+    ctx.fillRect(obs.x - 3, obs.y, 6, obs.height);
+    ctx.fillRect(obs.x + obs.width - 3, obs.y, 6, obs.height);
+    // Red glow
+    ctx.fillStyle = "#ff0033";
+    ctx.globalAlpha = 0.06 + flicker * 0.04;
+    ctx.fillRect(obs.x - 4, obs.y - 6, obs.width + 8, obs.height + 12);
+    ctx.globalAlpha = 1;
+  } else if (obs.type === "steam_vent") {
+    // Floor vent erupting steam upward
+    const elapsed = (t - obs.spawnTime) / 1000;
+    // Vent base (metal grate)
+    ctx.fillStyle = "#3a3a4a";
+    ctx.fillRect(obs.x, obs.y + obs.height - 6, obs.width, 6);
+    ctx.fillStyle = "#555566";
+    for (let gx = obs.x + 3; gx < obs.x + obs.width - 3; gx += 5) {
+      ctx.fillRect(gx, obs.y + obs.height - 5, 2, 4);
+    }
+    // Steam column
+    ctx.fillStyle = "#aabbcc";
+    for (let sy = 0; sy < obs.height - 6; sy += 4) {
+      const wobble = Math.sin(elapsed * 6 + sy * 0.3) * 3;
+      const fade = 1 - sy / (obs.height - 6);
+      ctx.globalAlpha = fade * 0.4;
+      ctx.fillRect(obs.x + wobble + 2, obs.y + sy, obs.width - 4, 3);
+    }
+    ctx.globalAlpha = 1;
+    // Hot glow at base
+    ctx.fillStyle = "#ff6600";
+    ctx.globalAlpha = 0.2 + Math.sin(elapsed * 5) * 0.1;
+    ctx.fillRect(obs.x - 2, obs.y + obs.height - 8, obs.width + 4, 8);
+    ctx.globalAlpha = 1;
+  } else if (obs.type === "hanging_wire") {
+    // Cables dangling from tunnel ceiling
+    const elapsed = (t - obs.spawnTime) / 1000;
+    const sway = Math.sin(elapsed * 2) * 3;
+    // Mount point on ceiling
+    ctx.fillStyle = "#444455";
+    ctx.fillRect(obs.x + 8, obs.y, 14, 5);
+    // Wires
+    ctx.strokeStyle = "#666688";
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 3; i++) {
+      const wx = obs.x + 8 + i * 6;
+      const wireLen = obs.height - 5 + (i === 1 ? 4 : 0);
+      ctx.beginPath();
+      ctx.moveTo(wx, obs.y + 5);
+      ctx.quadraticCurveTo(wx + sway * (i === 1 ? 1.5 : 1), obs.y + wireLen * 0.5, wx + sway, obs.y + wireLen);
+      ctx.stroke();
+    }
+    // Spark at bottom
+    const sparkOn = Math.sin(elapsed * 12 + obs.x) > 0.6;
+    if (sparkOn) {
+      ctx.fillStyle = "#00ffff";
+      ctx.globalAlpha = 0.8;
+      ctx.fillRect(obs.x + 12 + sway - 2, obs.y + obs.height - 4, 4, 4);
+      ctx.globalAlpha = 1;
+    }
   }
 
   ctx.restore();
@@ -1229,82 +1367,219 @@ function drawTunnel() {
   const bodyEnd = entEnd + tunnel.bodyWidth;
   const exitEnd = bodyEnd + tunnel.exitWidth;
 
-  // Underground pit background (dark)
-  ctx.fillStyle = "#060612";
-  ctx.beginPath();
-  ctx.moveTo(ent, GROUND_Y);
-  ctx.lineTo(entEnd, UNDERGROUND_Y);
-  ctx.lineTo(bodyEnd, UNDERGROUND_Y);
-  ctx.lineTo(exitEnd, GROUND_Y);
-  ctx.closePath();
-  ctx.fill();
+  if (playerUnderground) {
+    // === FULL-SCREEN IMMERSIVE TUNNEL ===
 
-  // Underground ground line (toxic green glow)
-  ctx.strokeStyle = "#00ff66";
-  ctx.lineWidth = 2;
-  ctx.globalAlpha = 0.5 + Math.sin(t_now / 400) * 0.2;
-  ctx.beginPath();
-  ctx.moveTo(entEnd, UNDERGROUND_Y);
-  ctx.lineTo(bodyEnd, UNDERGROUND_Y);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
+    // Fill entire screen with dark tunnel background
+    ctx.fillStyle = "#040410";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Glow under the underground ground line
-  const ugGlow = ctx.createLinearGradient(0, UNDERGROUND_Y, 0, UNDERGROUND_Y + 6);
-  ugGlow.addColorStop(0, "rgba(0, 255, 102, 0.15)");
-  ugGlow.addColorStop(1, "rgba(0, 255, 102, 0)");
-  ctx.fillStyle = ugGlow;
-  ctx.fillRect(entEnd, UNDERGROUND_Y, bodyEnd - entEnd, 6);
+    // Subtle wall texture — dark bricks / panels
+    ctx.fillStyle = "#0a0a1a";
+    for (let wy = TUNNEL_CEILING_Y; wy < UNDERGROUND_Y; wy += 20) {
+      const offset = (wy % 40 === 0) ? 0 : 15;
+      for (let wx = ((-groundOffset * 0.6 + offset) % 30) - 30; wx < canvas.width; wx += 30) {
+        ctx.fillRect(wx, wy, 28, 18);
+      }
+    }
 
-  // Ceiling at GROUND_Y with dripping pipes
-  ctx.strokeStyle = "#333355";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(entEnd, GROUND_Y);
-  ctx.lineTo(bodyEnd, GROUND_Y);
-  ctx.stroke();
+    // Ceiling — thick industrial beam
+    ctx.fillStyle = "#1a1a2e";
+    ctx.fillRect(0, TUNNEL_CEILING_Y - 8, canvas.width, 12);
+    ctx.fillStyle = "#222244";
+    ctx.fillRect(0, TUNNEL_CEILING_Y + 4, canvas.width, 4);
 
-  // Pipe details on ceiling
-  for (let px = entEnd + 30; px < bodyEnd - 30; px += 60) {
-    // Vertical pipe drip
-    ctx.fillStyle = "#224433";
-    ctx.fillRect(px, GROUND_Y, 4, 15);
-    // Drip glow
-    const drip = (t_now / 500 + px) % 30;
-    if (drip < 15) {
-      ctx.fillStyle = "#00ff66";
-      ctx.globalAlpha = 0.4;
-      ctx.fillRect(px + 1, GROUND_Y + 15 + drip, 2, 3);
+    // Ceiling conduits and pipes
+    for (let px = ((-groundOffset * 0.5) % 80) - 80; px < canvas.width; px += 80) {
+      // Vertical pipe
+      ctx.fillStyle = "#1a2a22";
+      ctx.fillRect(px + 35, TUNNEL_CEILING_Y + 4, 6, 20);
+      // Drip animation
+      const drip = (t_now / 400 + px) % 40;
+      if (drip < 20) {
+        ctx.fillStyle = "#00ff66";
+        ctx.globalAlpha = 0.5;
+        ctx.fillRect(px + 37, TUNNEL_CEILING_Y + 24 + drip, 2, 3);
+        ctx.globalAlpha = 1;
+      }
+      // Horizontal conduit
+      ctx.fillStyle = "#151525";
+      ctx.fillRect(px, TUNNEL_CEILING_Y + 6, 70, 4);
+    }
+
+    // Neon strip lights on walls (scrolling with parallax)
+    const stripGlow = 0.3 + Math.sin(t_now / 500) * 0.15;
+    ctx.fillStyle = "#00ff66";
+    ctx.globalAlpha = stripGlow;
+    ctx.fillRect(0, TUNNEL_CEILING_Y + 40, canvas.width, 1);
+    ctx.fillRect(0, UNDERGROUND_Y - 25, canvas.width, 1);
+    ctx.globalAlpha = 1;
+
+    // Occasional warning signs on walls
+    for (let sx = ((-groundOffset * 0.6) % 200) - 200; sx < canvas.width; sx += 200) {
+      // Hazard stripe
+      ctx.fillStyle = "#221100";
+      ctx.fillRect(sx + 60, TUNNEL_CEILING_Y + 50, 40, 20);
+      ctx.fillStyle = "#ff6600";
+      ctx.globalAlpha = 0.4 + Math.sin(t_now / 300 + sx) * 0.2;
+      ctx.font = "bold 7px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("CAUTION", sx + 80, TUNNEL_CEILING_Y + 64);
+      ctx.textAlign = "left";
       ctx.globalAlpha = 1;
     }
-    // Horizontal conduit
-    ctx.fillStyle = "#1a2a1a";
-    ctx.fillRect(px - 20, GROUND_Y + 2, 44, 3);
+
+    // Floor — underground ground with toxic glow
+    ctx.fillStyle = "#0a0a14";
+    ctx.fillRect(0, UNDERGROUND_Y, canvas.width, canvas.height - UNDERGROUND_Y);
+    // Glowing floor line
+    ctx.strokeStyle = "#00ff66";
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.6 + Math.sin(t_now / 400) * 0.2;
+    ctx.beginPath();
+    ctx.moveTo(0, UNDERGROUND_Y);
+    ctx.lineTo(canvas.width, UNDERGROUND_Y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    // Floor glow gradient
+    const floorGlow = ctx.createLinearGradient(0, UNDERGROUND_Y, 0, UNDERGROUND_Y + 10);
+    floorGlow.addColorStop(0, "rgba(0, 255, 102, 0.12)");
+    floorGlow.addColorStop(1, "rgba(0, 255, 102, 0)");
+    ctx.fillStyle = floorGlow;
+    ctx.fillRect(0, UNDERGROUND_Y, canvas.width, 10);
+
+    // Rail tracks on floor
+    ctx.strokeStyle = "#222233";
+    ctx.lineWidth = 1;
+    for (let rail = 0; rail < 2; rail++) {
+      const ry = UNDERGROUND_Y + 3 + rail * 4;
+      ctx.beginPath();
+      ctx.moveTo(0, ry);
+      ctx.lineTo(canvas.width, ry);
+      ctx.stroke();
+    }
+    // Rail ties (cross-beams)
+    ctx.fillStyle = "#181828";
+    for (let tx = ((-groundOffset * 0.8) % 25) - 25; tx < canvas.width; tx += 25) {
+      ctx.fillRect(tx, UNDERGROUND_Y + 2, 8, 6);
+    }
+
+    // Exit light — bright opening visible ahead when approaching exit
+    const exitScreenX = exitEnd;
+    if (exitScreenX > 0 && exitScreenX < canvas.width + 100) {
+      // Bright light cone from exit
+      const lightGrad = ctx.createLinearGradient(exitScreenX - 120, 0, exitScreenX, 0);
+      lightGrad.addColorStop(0, "rgba(0, 0, 0, 0)");
+      lightGrad.addColorStop(1, "rgba(100, 140, 200, 0.15)");
+      ctx.fillStyle = lightGrad;
+      ctx.fillRect(exitScreenX - 120, TUNNEL_CEILING_Y, 120, UNDERGROUND_Y - TUNNEL_CEILING_Y);
+      // Exit marker
+      ctx.fillStyle = "#88aacc";
+      ctx.globalAlpha = 0.6 + Math.sin(t_now / 200) * 0.3;
+      ctx.font = "bold 9px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("EXIT", exitScreenX - 20, GROUND_Y + 20);
+      ctx.textAlign = "left";
+      ctx.globalAlpha = 1;
+    }
+
+    // Entrance visible behind player
+    const entScreenX = ent;
+    if (entScreenX > -100 && entScreenX < canvas.width) {
+      const entGrad = ctx.createLinearGradient(entScreenX, 0, entScreenX + 100, 0);
+      entGrad.addColorStop(0, "rgba(100, 140, 200, 0.1)");
+      entGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+      ctx.fillStyle = entGrad;
+      ctx.fillRect(entScreenX, TUNNEL_CEILING_Y, 100, UNDERGROUND_Y - TUNNEL_CEILING_Y);
+    }
+
+    // Ambient particles — dust motes
+    ctx.fillStyle = "#00ff66";
+    for (let i = 0; i < 8; i++) {
+      const dx = ((t_now * 0.02 + i * 107) % canvas.width);
+      const dy = TUNNEL_CEILING_Y + 30 + ((t_now * 0.01 + i * 73) % (UNDERGROUND_Y - TUNNEL_CEILING_Y - 40));
+      ctx.globalAlpha = 0.15 + Math.sin(t_now / 300 + i) * 0.1;
+      ctx.fillRect(dx, dy, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+
+  } else {
+    // === SURFACE VIEW — show tunnel entrance/exit from above ===
+
+    // Underground pit background (dark)
+    ctx.fillStyle = "#060612";
+    ctx.beginPath();
+    ctx.moveTo(ent, GROUND_Y);
+    ctx.lineTo(entEnd, UNDERGROUND_Y);
+    ctx.lineTo(bodyEnd, UNDERGROUND_Y);
+    ctx.lineTo(exitEnd, GROUND_Y);
+    ctx.closePath();
+    ctx.fill();
+
+    // Underground ground line (toxic green glow)
+    ctx.strokeStyle = "#00ff66";
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.5 + Math.sin(t_now / 400) * 0.2;
+    ctx.beginPath();
+    ctx.moveTo(entEnd, UNDERGROUND_Y);
+    ctx.lineTo(bodyEnd, UNDERGROUND_Y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // Glow under the underground ground line
+    const ugGlow = ctx.createLinearGradient(0, UNDERGROUND_Y, 0, UNDERGROUND_Y + 6);
+    ugGlow.addColorStop(0, "rgba(0, 255, 102, 0.15)");
+    ugGlow.addColorStop(1, "rgba(0, 255, 102, 0)");
+    ctx.fillStyle = ugGlow;
+    ctx.fillRect(entEnd, UNDERGROUND_Y, bodyEnd - entEnd, 6);
+
+    // Ceiling at GROUND_Y with dripping pipes
+    ctx.strokeStyle = "#333355";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(entEnd, GROUND_Y);
+    ctx.lineTo(bodyEnd, GROUND_Y);
+    ctx.stroke();
+
+    // Pipe details on ceiling
+    for (let px = entEnd + 30; px < bodyEnd - 30; px += 60) {
+      ctx.fillStyle = "#224433";
+      ctx.fillRect(px, GROUND_Y, 4, 15);
+      const drip = (t_now / 500 + px) % 30;
+      if (drip < 15) {
+        ctx.fillStyle = "#00ff66";
+        ctx.globalAlpha = 0.4;
+        ctx.fillRect(px + 1, GROUND_Y + 15 + drip, 2, 3);
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = "#1a2a1a";
+      ctx.fillRect(px - 20, GROUND_Y + 2, 44, 3);
+    }
+
+    // Entrance ramp edges
+    ctx.strokeStyle = "#ff00ff";
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(ent, GROUND_Y);
+    ctx.lineTo(entEnd, UNDERGROUND_Y);
+    ctx.stroke();
+    // Exit ramp edges
+    ctx.beginPath();
+    ctx.moveTo(bodyEnd, UNDERGROUND_Y);
+    ctx.lineTo(exitEnd, GROUND_Y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // "DANGER" warning text at entrance
+    ctx.font = "bold 8px 'Courier New', monospace";
+    ctx.fillStyle = "#ff6600";
+    ctx.globalAlpha = 0.5 + Math.sin(t_now / 300) * 0.3;
+    ctx.textAlign = "center";
+    ctx.fillText("DANGER", ent + tunnel.entranceWidth / 2, GROUND_Y - 4);
+    ctx.textAlign = "left";
+    ctx.globalAlpha = 1;
   }
-
-  // Entrance ramp edges
-  ctx.strokeStyle = "#ff00ff";
-  ctx.lineWidth = 1;
-  ctx.globalAlpha = 0.5;
-  ctx.beginPath();
-  ctx.moveTo(ent, GROUND_Y);
-  ctx.lineTo(entEnd, UNDERGROUND_Y);
-  ctx.stroke();
-  // Exit ramp edges
-  ctx.beginPath();
-  ctx.moveTo(bodyEnd, UNDERGROUND_Y);
-  ctx.lineTo(exitEnd, GROUND_Y);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-
-  // "DANGER" warning text at entrance
-  ctx.font = "bold 8px 'Courier New', monospace";
-  ctx.fillStyle = "#ff6600";
-  ctx.globalAlpha = 0.5 + Math.sin(t_now / 300) * 0.3;
-  ctx.textAlign = "center";
-  ctx.fillText("DANGER", ent + tunnel.entranceWidth / 2, GROUND_Y - 4);
-  ctx.textAlign = "left";
-  ctx.globalAlpha = 1;
 
   ctx.restore();
 }
@@ -1576,13 +1851,8 @@ function draw() {
   drawGround();
   drawTunnel();
 
-  // Darken sky when underground
-  if (playerUnderground) {
-    ctx.save();
-    ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-    ctx.fillRect(0, 0, canvas.width, GROUND_Y);
-    ctx.restore();
-  }
+  // When underground, the immersive tunnel drawTunnel() covers the full screen.
+  // No additional sky darkening needed — the tunnel IS the environment.
 
   if (state === "playing" || state === "gameover" || state === "paused" || state === "entering_initials") {
     for (const obs of obstacles) {
