@@ -31,14 +31,14 @@ const DRONE_KILL_SCORE = 50;
 // ── Time-of-day cycle ──
 // Each "period" lasts a score range. The cycle loops.
 const TIME_PERIODS = [
-  { name: "DUSK",         scoreLen: 500,  sky: ["#0d0818","#1a0a2e","#2a1040"], starAlpha: 0.25, moonAlpha: 0.08, haze: "rgba(80,20,60,0.06)", roadGlow: "#ff00ff" },
-  { name: "NIGHT",        scoreLen: 600,  sky: ["#020208","#060614","#0c0c24"], starAlpha: 0.6,  moonAlpha: 0.15, haze: null,                   roadGlow: "#ff00ff" },
-  { name: "MIDNIGHT",     scoreLen: 700,  sky: ["#000004","#030310","#08081c"], starAlpha: 0.8,  moonAlpha: 0.20, haze: null,                   roadGlow: "#cc00ff" },
-  { name: "ACID RAIN",    scoreLen: 500,  sky: ["#040808","#081018","#0c1820"], starAlpha: 0.05, moonAlpha: 0.03, haze: "rgba(0,255,80,0.04)",  roadGlow: "#00ff66" },
-  { name: "LATE NIGHT",   scoreLen: 600,  sky: ["#020206","#060612","#0a0a20"], starAlpha: 0.7,  moonAlpha: 0.18, haze: null,                   roadGlow: "#ff00ff" },
-  { name: "NEON FOG",     scoreLen: 500,  sky: ["#08040c","#140a1e","#1e1030"], starAlpha: 0.1,  moonAlpha: 0.05, haze: "rgba(180,0,255,0.06)", roadGlow: "#ff00cc" },
-  { name: "STORM",        scoreLen: 600,  sky: ["#060610","#0a0a1a","#101028"], starAlpha: 0.02, moonAlpha: 0.02, haze: "rgba(100,100,180,0.05)", roadGlow: "#6666ff" },
-  { name: "PRE-DAWN",     scoreLen: 400,  sky: ["#0a0410","#160820","#201038"], starAlpha: 0.35, moonAlpha: 0.10, haze: "rgba(100,40,80,0.04)", roadGlow: "#ff44aa" },
+  { name: "DUSK",         scoreLen: 300,  sky: ["#1a0825","#2e1248","#441868"], starAlpha: 0.15, moonAlpha: 0.06, haze: "rgba(120,30,80,0.08)", roadGlow: "#ff00ff" },
+  { name: "NIGHT",        scoreLen: 350,  sky: ["#020208","#060614","#0c0c24"], starAlpha: 0.6,  moonAlpha: 0.15, haze: null,                   roadGlow: "#ff00ff" },
+  { name: "ACID RAIN",    scoreLen: 350,  sky: ["#061010","#0c1820","#142830"], starAlpha: 0.05, moonAlpha: 0.03, haze: "rgba(0,255,80,0.07)",  roadGlow: "#00ff66" },
+  { name: "MIDNIGHT",     scoreLen: 400,  sky: ["#000004","#030310","#08081c"], starAlpha: 0.8,  moonAlpha: 0.20, haze: null,                   roadGlow: "#cc00ff" },
+  { name: "NEON FOG",     scoreLen: 350,  sky: ["#100818","#1e1030","#2c1848"], starAlpha: 0.1,  moonAlpha: 0.05, haze: "rgba(180,0,255,0.08)", roadGlow: "#ff00cc" },
+  { name: "STORM",        scoreLen: 400,  sky: ["#080818","#101028","#181838"], starAlpha: 0.02, moonAlpha: 0.02, haze: "rgba(100,100,180,0.06)", roadGlow: "#6666ff" },
+  { name: "LATE NIGHT",   scoreLen: 350,  sky: ["#020206","#060612","#0a0a20"], starAlpha: 0.7,  moonAlpha: 0.18, haze: null,                   roadGlow: "#ff00ff" },
+  { name: "PRE-DAWN",     scoreLen: 300,  sky: ["#140820","#201038","#301850"], starAlpha: 0.35, moonAlpha: 0.10, haze: "rgba(100,40,80,0.06)", roadGlow: "#ff44aa" },
 ];
 const TIME_CYCLE_LEN = TIME_PERIODS.reduce((s, p) => s + p.scoreLen, 0);
 
@@ -133,6 +133,7 @@ let difficultyTier = ""; // current difficulty tier label
 let initialsEntry = { chars: [65, 65, 65], pos: 0 }; // for arcade initials input
 let resumeGraceFrames = 0; // brief collision immunity after unpausing
 let touchHintTimer = 0; // frames to show touch zone hints after game start
+let isFirstStart = true; // true only for the very first game after page load
 
 // Jetpack state
 let jetpackUnlocked = false;
@@ -153,6 +154,11 @@ let shootCooldown = 0;
 let droneKills = 0;     // total drones destroyed this run
 let killFlashTimer = 0; // screen flash on kill
 let lastKillText = "";  // "+50" popup
+let currentTimePeriodName = ""; // track for transition detection
+let timePeriodFlashTimer = 0;  // flash when period changes
+
+// Unlock tutorial pause state
+let unlockPause = null; // { title, lines, color } when active
 
 // City background layers (parallax)
 const buildings = [];
@@ -223,8 +229,17 @@ document.addEventListener("keydown", (e) => {
     if (state === "playing") {
       pauseGame();
     } else if (state === "paused") {
+      unlockPause = null;
       resumeGame();
     }
+    e.preventDefault();
+    return;
+  }
+
+  // Unlock tutorial pause — any key dismisses
+  if (state === "paused" && unlockPause) {
+    unlockPause = null;
+    resumeGame();
     e.preventDefault();
     return;
   }
@@ -302,6 +317,11 @@ canvas.addEventListener("touchstart", (e) => {
     handleInitialsTouch(pos.x, pos.y);
     return;
   }
+  if (state === "paused" && unlockPause) {
+    unlockPause = null;
+    resumeGame();
+    return;
+  }
   if (state === "paused") return;
   if (state !== "playing") return;
 
@@ -366,21 +386,28 @@ function startGame() {
   droneKills = 0;
   killFlashTimer = 0;
   lastKillText = "";
-  touchHintTimer = isTouchDevice ? 120 : 0; // ~2 seconds of touch hints
+  currentTimePeriodName = "";
+  timePeriodFlashTimer = 0;
+  unlockPause = null;
+  // Only show touch/control hints on first start after page load
+  touchHintTimer = (isTouchDevice && isFirstStart) ? 180 : 0;
   generateBuildings();
 
   document.getElementById("start-screen").classList.add("hidden");
   document.getElementById("game-over-screen").classList.add("hidden");
   document.getElementById("pause-screen").classList.add("hidden");
 
-  // Show touch zone overlay briefly on mobile
+  // Show touch zone overlay briefly on mobile — only on first start
   if (isTouchDevice) {
-    const touchControls = document.getElementById("touch-controls");
-    touchControls.classList.remove("hidden");
     const pauseBtn = document.getElementById("pause-btn-mobile");
     pauseBtn.classList.remove("hidden");
-    setTimeout(() => { touchControls.classList.add("hidden"); }, 2000);
+    if (isFirstStart) {
+      const touchControls = document.getElementById("touch-controls");
+      touchControls.classList.remove("hidden");
+      setTimeout(() => { touchControls.classList.add("hidden"); }, 3000);
+    }
   }
+  isFirstStart = false;
 }
 
 function pauseGame() {
@@ -815,6 +842,11 @@ function updatePlayer() {
   const prevUnderground = playerUnderground;
   playerUnderground = player.y + player.height > GROUND_Y + 5;
 
+  // Detect tunnel entry — spawn first obstacle quickly
+  if (!prevUnderground && playerUnderground) {
+    tunnelObstacleTimer = Math.max(35, tunnelObstacleTimer); // fast first spawn
+  }
+
   // Detect tunnel exit transition — grant grace frames
   if (prevUnderground && !playerUnderground) {
     tunnelExitGrace = 60; // ~1 second of no obstacle spawns after surfacing
@@ -838,11 +870,11 @@ function updatePlayer() {
 function updateTunnel() {
   if (!tunnel) {
     // Spawn check
-    if (score >= TUNNEL_SCORE && Math.random() < 0.002) {
+    if (score >= TUNNEL_SCORE && Math.random() < 0.005) {
       tunnel = {
         x: canvas.width + 100,
         entranceWidth: 60,
-        bodyWidth: 900 + Math.random() * 400,
+        bodyWidth: 1400 + Math.random() * 600,
         exitWidth: 60,
       };
     }
@@ -1010,7 +1042,7 @@ function updateObstacles() {
   if (playerUnderground) {
     // Underground obstacle spawning — tighter gaps than surface
     tunnelObstacleTimer++;
-    const ugGap = minGap + 5; // much tighter than the old +20
+    const ugGap = Math.max(35, minGap - 15); // significantly tighter underground
     if (tunnelObstacleTimer > ugGap) {
       // 25% chance of combo obstacles (two in quick succession)
       if (Math.random() < 0.25) {
@@ -2306,11 +2338,39 @@ function drawHUD() {
       "ACID RAIN": "#00ff66", "LATE NIGHT": "#6666aa", "NEON FOG": "#cc44ff",
       "STORM": "#6688ff", "PRE-DAWN": "#cc6688",
     };
+
+    // Detect time period transition
+    if (currentTimePeriodName && currentTimePeriodName !== period.name) {
+      timePeriodFlashTimer = 120; // ~2 seconds
+    }
+    currentTimePeriodName = period.name;
+
+    const periodColor = timeColors[period.name] || "#666688";
     ctx.save();
-    ctx.font = "7px 'Courier New', monospace";
+
+    // Big transition announcement
+    if (timePeriodFlashTimer > 0) {
+      timePeriodFlashTimer--;
+      const flashAlpha = Math.min(1, timePeriodFlashTimer / 40) * 0.8;
+      ctx.font = "bold 16px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = periodColor;
+      ctx.globalAlpha = flashAlpha;
+      ctx.shadowColor = periodColor;
+      ctx.shadowBlur = 12;
+      ctx.fillText(period.name, canvas.width / 2, 84);
+      ctx.shadowBlur = 0;
+      // Thin line accent
+      ctx.globalAlpha = flashAlpha * 0.3;
+      ctx.fillRect(canvas.width / 2 - 80, 90, 160, 1);
+      ctx.textAlign = "left";
+    }
+
+    // Persistent small label
+    ctx.font = "9px 'Courier New', monospace";
     ctx.textAlign = "right";
-    ctx.fillStyle = timeColors[period.name] || "#666688";
-    ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 600) * 0.15;
+    ctx.fillStyle = periodColor;
+    ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 600) * 0.15;
     ctx.fillText(period.name, canvas.width - 40, 38);
     ctx.globalAlpha = 1;
     ctx.restore();
@@ -2473,61 +2533,101 @@ function draw() {
     drawInitialsEntry();
   }
 
-  // Unlock notifications
-  if (tunnelFlashTimer > 0) {
-    const alpha = Math.min(1, tunnelFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
+  // Unlock pause tutorial overlay
+  if (unlockPause && state === "paused") {
     ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.font = "bold 20px 'Courier New', monospace";
+    // Dim background
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const cx = canvas.width / 2;
+    const col = unlockPause.color;
+    const pulse = 0.8 + Math.sin(Date.now() / 200) * 0.2;
+
+    // Box background
+    ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.9;
+    const boxW = 320;
+    const boxH = 30 + unlockPause.lines.length * 22 + 30;
+    const boxX = cx - boxW / 2;
+    const boxY = 55;
+    ctx.fillRect(boxX, boxY, boxW, boxH);
+    ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+    // Title
+    ctx.font = "bold 18px 'Courier New', monospace";
     ctx.textAlign = "center";
-    ctx.fillStyle = "#00ff66";
-    ctx.globalAlpha = alpha * 0.15;
-    ctx.fillRect(canvas.width / 2 - 140, 60, 280, 35);
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = "#00ff66";
-    ctx.shadowColor = "#00ff66";
-    ctx.shadowBlur = 15;
-    ctx.fillText("UNDERGROUND UNLOCKED", canvas.width / 2, 84);
+    ctx.fillStyle = col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 12;
+    ctx.globalAlpha = pulse;
+    ctx.fillText(unlockPause.title, cx, boxY + 26);
     ctx.shadowBlur = 0;
+
+    // Instruction lines
+    ctx.font = "12px 'Courier New', monospace";
+    ctx.fillStyle = "#cccccc";
+    ctx.globalAlpha = 0.9;
+    for (let i = 0; i < unlockPause.lines.length; i++) {
+      ctx.fillText(unlockPause.lines[i], cx, boxY + 50 + i * 22);
+    }
+
+    // Continue prompt
+    ctx.font = "bold 10px 'Courier New', monospace";
+    ctx.fillStyle = col;
+    ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 300) * 0.3;
+    const promptText = isTouchDevice ? "TAP TO CONTINUE" : "PRESS ANY KEY TO CONTINUE";
+    ctx.fillText(promptText, cx, boxY + boxH - 8);
+    ctx.globalAlpha = 1;
     ctx.textAlign = "left";
     ctx.restore();
   }
 
-  if (unlockFlashTimer > 0) {
-    const alpha = Math.min(1, unlockFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.font = "bold 20px 'Courier New', monospace";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#ff00ff";
-    ctx.globalAlpha = alpha * 0.15;
-    ctx.fillRect(canvas.width / 2 - 140, 60, 280, 35);
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = "#ff00ff";
-    ctx.shadowColor = "#ff00ff";
-    ctx.shadowBlur = 15;
-    ctx.fillText("DOUBLE JUMP UNLOCKED", canvas.width / 2, 84);
-    ctx.shadowBlur = 0;
-    ctx.textAlign = "left";
-    ctx.restore();
-  }
-
-  if (jetpackFlashTimer > 0) {
-    const alpha = Math.min(1, jetpackFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
-    ctx.save();
-    ctx.font = "bold 20px 'Courier New', monospace";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#ff6600";
-    ctx.globalAlpha = alpha * 0.15;
-    ctx.fillRect(canvas.width / 2 - 130, 60, 260, 35);
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = "#ff6600";
-    ctx.shadowColor = "#ff6600";
-    ctx.shadowBlur = 15;
-    ctx.fillText("HOVER PACK UNLOCKED", canvas.width / 2, 84);
-    ctx.shadowBlur = 0;
-    ctx.textAlign = "left";
-    ctx.restore();
+  // Flash notifications (after unlock pause is dismissed, these continue briefly)
+  if (!unlockPause) {
+    if (tunnelFlashTimer > 0) {
+      const alpha = Math.min(1, tunnelFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.font = "bold 20px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#00ff66";
+      ctx.shadowColor = "#00ff66";
+      ctx.shadowBlur = 15;
+      ctx.fillText("UNDERGROUND UNLOCKED", canvas.width / 2, 84);
+      ctx.shadowBlur = 0;
+      ctx.textAlign = "left";
+      ctx.restore();
+    }
+    if (unlockFlashTimer > 0) {
+      const alpha = Math.min(1, unlockFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.font = "bold 20px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ff00ff";
+      ctx.shadowColor = "#ff00ff";
+      ctx.shadowBlur = 15;
+      ctx.fillText("DOUBLE JUMP UNLOCKED", canvas.width / 2, 84);
+      ctx.shadowBlur = 0;
+      ctx.textAlign = "left";
+      ctx.restore();
+    }
+    if (jetpackFlashTimer > 0) {
+      const alpha = Math.min(1, jetpackFlashTimer / 30) * (0.7 + Math.sin(Date.now() / 100) * 0.3);
+      ctx.save();
+      ctx.font = "bold 20px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ff6600";
+      ctx.shadowColor = "#ff6600";
+      ctx.shadowBlur = 15;
+      ctx.fillText("HOVER PACK UNLOCKED", canvas.width / 2, 84);
+      ctx.shadowBlur = 0;
+      ctx.textAlign = "left";
+      ctx.restore();
+    }
   }
 
   drawScanlines();
@@ -2569,24 +2669,49 @@ function update() {
   gameSpeed = Math.min(MAX_SPEED, INITIAL_SPEED + score * speedIncrement);
   score += gameSpeed * 0.05;
 
-  // Check for tunnel unlock
+  // Check for tunnel unlock — pause with instructions
   if (!tunnelUnlocked && score >= TUNNEL_SCORE) {
     tunnelUnlocked = true;
     tunnelFlashTimer = 180;
+    unlockPause = {
+      title: "UNDERGROUND UNLOCKED",
+      lines: ["Tunnels will appear in the road ahead.", "You'll descend into them automatically.", "Watch for pipes, lasers, and hazards below!"],
+      color: "#00ff66",
+    };
+    state = "paused";
+    resumeGraceFrames = 15;
   }
   if (tunnelFlashTimer > 0) tunnelFlashTimer--;
 
-  // Check for double jump unlock
+  // Check for double jump unlock — pause with instructions
   if (!doubleJumpUnlocked && score >= ADVANCED_PHASE_SCORE) {
     doubleJumpUnlocked = true;
     unlockFlashTimer = 180;
+    unlockPause = {
+      title: "DOUBLE JUMP UNLOCKED",
+      lines: isTouchDevice
+        ? ["Tap jump twice to double jump!", "Use it to clear firewalls and combo obstacles."]
+        : ["Press Space/Up twice to double jump!", "Use it to clear firewalls and combo obstacles."],
+      color: "#ff00ff",
+    };
+    state = "paused";
+    resumeGraceFrames = 15;
   }
   if (unlockFlashTimer > 0) unlockFlashTimer--;
 
-  // Check for jetpack unlock
+  // Check for jetpack unlock — pause with instructions
   if (!jetpackUnlocked && score >= JETPACK_SCORE) {
     jetpackUnlocked = true;
     jetpackFlashTimer = 180;
+    unlockPause = {
+      title: "HOVER PACK UNLOCKED",
+      lines: isTouchDevice
+        ? ["Hold the jump zone to hover!", "Fuel drains while hovering, recharges on ground.", "Use it to fly over obstacles."]
+        : ["Hold Space/Up to hover!", "Fuel drains while hovering, recharges on ground.", "Use it to fly over obstacles."],
+      color: "#ff6600",
+    };
+    state = "paused";
+    resumeGraceFrames = 15;
   }
   if (jetpackFlashTimer > 0) jetpackFlashTimer--;
 
