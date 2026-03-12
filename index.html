@@ -7,21 +7,25 @@
     <link rel="stylesheet" href="stylesheet.css">
 </head>
 <body>
+    <div id="rotate-prompt">
+        <div class="rotate-icon">&#8635;</div>
+        <p>Rotate your device</p>
+        <p class="rotate-sub">Neon Sprint plays best in landscape</p>
+    </div>
     <div id="game-container">
         <canvas id="gameCanvas" width="800" height="350"></canvas>
         <div id="ui-overlay">
             <div id="score-display">SCORE 000000</div>
             <div id="start-screen">
                 <h1>Neon Sprint</h1>
+                <div class="title-line"></div>
                 <div class="controls-desktop">
-                    <p>Press <kbd>Space</kbd> / <kbd>Up</kbd> to Jump</p>
-                    <p>Press <kbd>Down</kbd> to Slide</p>
-                    <p>Press <kbd>Tab</kbd> to Shoot Drones</p>
-                    <p>Press <kbd>Esc</kbd> to Pause</p>
+                    <p><kbd>Space</kbd> / <kbd>Up</kbd> Jump &nbsp;&middot;&nbsp; <kbd>Down</kbd> Slide</p>
+                    <p><kbd>Tab</kbd> Shoot &nbsp;&middot;&nbsp; <kbd>Esc</kbd> Pause</p>
                 </div>
                 <div class="controls-mobile">
-                    <p>Left side: top = Jump, bottom = Slide</p>
-                    <p>Right side: tap to Shoot Drones</p>
+                    <p>Left top = Jump &nbsp;&middot;&nbsp; Left bottom = Slide</p>
+                    <p>Right side = Shoot Drones</p>
                 </div>
                 <div id="start-leaderboard" class="leaderboard-container"></div>
                 <p class="start-prompt start-prompt-desktop">Press any key to start</p>
@@ -30,6 +34,20 @@
             <div id="game-over-screen" class="hidden">
                 <h1>Flatlined</h1>
                 <p id="final-score"></p>
+                <div id="game-over-stats">
+                    <div class="stat-item">
+                        <p class="stat-value" id="stat-kills">0</p>
+                        <p class="stat-label">Kills</p>
+                    </div>
+                    <div class="stat-item">
+                        <p class="stat-value" id="stat-speed">0</p>
+                        <p class="stat-label">Top Speed</p>
+                    </div>
+                    <div class="stat-item">
+                        <p class="stat-value" id="stat-time">0s</p>
+                        <p class="stat-label">Survived</p>
+                    </div>
+                </div>
                 <p id="high-score"></p>
                 <div id="game-over-leaderboard" class="leaderboard-container"></div>
                 <p class="start-prompt start-prompt-desktop">Press any key to jack back in</p>
