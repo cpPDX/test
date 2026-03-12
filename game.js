@@ -160,6 +160,12 @@ let timePeriodFlashTimer = 0;  // flash when period changes
 // Unlock tutorial pause state
 let unlockPause = null; // { title, lines, color } when active
 
+// Stats tracking
+let maxSpeedReached = 0;
+let gameStartTime = 0;
+let screenShake = 0; // frames of shake remaining
+let deathFlash = 0; // frames of red flash on death
+
 // City background layers (parallax)
 const buildings = [];
 const farBuildings = [];
@@ -389,6 +395,10 @@ function startGame() {
   currentTimePeriodName = "";
   timePeriodFlashTimer = 0;
   unlockPause = null;
+  maxSpeedReached = INITIAL_SPEED;
+  gameStartTime = performance.now();
+  screenShake = 0;
+  deathFlash = 0;
   // Only show touch/control hints on first start after page load
   touchHintTimer = (isTouchDevice && isFirstStart) ? 180 : 0;
   generateBuildings();
@@ -515,6 +525,14 @@ document.getElementById("game-container").addEventListener("touchstart", (e) => 
 function showGameOverScreen() {
   document.getElementById("final-score").textContent = "Score: " + Math.floor(score);
   document.getElementById("high-score").textContent = "Best: " + Math.floor(highScore);
+
+  // Populate stats
+  document.getElementById("stat-kills").textContent = droneKills;
+  const speedPct = Math.floor(((maxSpeedReached - INITIAL_SPEED) / (MAX_SPEED - INITIAL_SPEED)) * 100);
+  document.getElementById("stat-speed").textContent = speedPct + "%";
+  const survived = Math.floor((performance.now() - gameStartTime) / 1000);
+  document.getElementById("stat-time").textContent = survived + "s";
+
   renderLeaderboardHTML("game-over-leaderboard");
   document.getElementById("game-over-screen").classList.remove("hidden");
   if (isTouchDevice) {
@@ -524,9 +542,11 @@ function showGameOverScreen() {
 
 function gameOver() {
   if (score > highScore) highScore = score;
+  screenShake = 15; // ~250ms of screen shake
+  deathFlash = 10; // brief red flash
 
-  // Neon explosion particles
-  for (let i = 0; i < 30; i++) {
+  // Neon explosion particles — more dramatic
+  for (let i = 0; i < 50; i++) {
     const angle = Math.random() * Math.PI * 2;
     const speed = 2 + Math.random() * 6;
     particles.push({
@@ -2295,24 +2315,34 @@ function drawScanlines() {
 function drawHUD() {
   if (state !== "playing") return;
 
-  // Speed indicator
+  // Speed indicator — wider bar with rounded ends feel
   const speedPct = (gameSpeed - INITIAL_SPEED) / (MAX_SPEED - INITIAL_SPEED);
-  ctx.fillStyle = "#222233";
-  ctx.fillRect(12, 12, 60, 6);
-  const barGrad = ctx.createLinearGradient(12, 0, 72, 0);
+  ctx.fillStyle = "#181828";
+  ctx.fillRect(12, 12, 70, 7);
+  ctx.strokeStyle = "#333344";
+  ctx.lineWidth = 0.5;
+  ctx.strokeRect(12, 12, 70, 7);
+  const barGrad = ctx.createLinearGradient(12, 0, 82, 0);
   barGrad.addColorStop(0, "#00ffcc");
   barGrad.addColorStop(1, "#ff00ff");
   ctx.fillStyle = barGrad;
-  ctx.fillRect(12, 12, 60 * speedPct, 6);
+  ctx.fillRect(12, 12, 70 * speedPct, 7);
+  // Speed glow at bar tip
+  if (speedPct > 0.1) {
+    ctx.fillStyle = "#ffffff";
+    ctx.globalAlpha = 0.4;
+    ctx.fillRect(12 + 70 * speedPct - 2, 12, 2, 7);
+    ctx.globalAlpha = 1;
+  }
 
-  ctx.fillStyle = "#555566";
-  ctx.font = "9px 'Courier New', monospace";
-  ctx.fillText("SPD", 14, 28);
+  ctx.fillStyle = "#666677";
+  ctx.font = "bold 9px 'Courier New', monospace";
+  ctx.fillText("SPD", 14, 29);
 
   // Difficulty tier label
   if (difficultyTier) {
     ctx.save();
-    ctx.font = "bold 9px 'Courier New', monospace";
+    ctx.font = "bold 10px 'Courier New', monospace";
     ctx.textAlign = "right";
     const tierColors = {
       "DOUBLE JUMP": "#ff00ff",
@@ -2323,9 +2353,13 @@ function drawHUD() {
       "UNDERGROUND": "#00ff66",
       "HOVER PACK": "#ff6600",
     };
-    ctx.fillStyle = tierColors[difficultyTier] || "#00ffcc";
-    ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 400) * 0.3;
+    const tierColor = tierColors[difficultyTier] || "#00ffcc";
+    ctx.fillStyle = tierColor;
+    ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 400) * 0.3;
+    ctx.shadowColor = tierColor;
+    ctx.shadowBlur = 6;
     ctx.fillText(difficultyTier, canvas.width - 40, 28);
+    ctx.shadowBlur = 0;
     ctx.globalAlpha = 1;
     ctx.restore();
   }
@@ -2380,69 +2414,90 @@ function drawHUD() {
   if (player.canDoubleJump) {
     const maxJumps = 2;
     const jumpsLeft = maxJumps - player.jumpsUsed;
+    const djY = 35;
+    ctx.font = "bold 9px 'Courier New', monospace";
+    ctx.fillStyle = "#666677";
+    ctx.fillText("JUMP", 14, djY);
     for (let i = 0; i < maxJumps; i++) {
-      const ix = 14 + i * 12;
-      const iy = 34;
+      const ix = 50 + i * 14;
       if (i < jumpsLeft) {
         ctx.fillStyle = "#ff00ff";
-        ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 300) * 0.3;
+        ctx.globalAlpha = 0.8 + Math.sin(Date.now() / 300) * 0.2;
+        ctx.shadowColor = "#ff00ff";
+        ctx.shadowBlur = 4;
       } else {
         ctx.fillStyle = "#332233";
         ctx.globalAlpha = 0.4;
+        ctx.shadowBlur = 0;
       }
-      // Small upward arrow / chevron
+      // Upward chevron
       ctx.beginPath();
-      ctx.moveTo(ix, iy + 6);
-      ctx.lineTo(ix + 4, iy);
-      ctx.lineTo(ix + 8, iy + 6);
-      ctx.lineTo(ix + 6, iy + 6);
-      ctx.lineTo(ix + 4, iy + 2);
-      ctx.lineTo(ix + 2, iy + 6);
+      ctx.moveTo(ix, djY);
+      ctx.lineTo(ix + 5, djY - 7);
+      ctx.lineTo(ix + 10, djY);
+      ctx.lineTo(ix + 7, djY);
+      ctx.lineTo(ix + 5, djY - 4);
+      ctx.lineTo(ix + 3, djY);
       ctx.closePath();
       ctx.fill();
     }
+    ctx.shadowBlur = 0;
     ctx.globalAlpha = 1;
   } else if (score > ADVANCED_PHASE_SCORE * 0.7) {
     // Tease: approaching unlock
     const pct = (score - ADVANCED_PHASE_SCORE * 0.7) / (ADVANCED_PHASE_SCORE * 0.3);
     ctx.fillStyle = "#ff00ff";
-    ctx.globalAlpha = 0.15 + pct * 0.2;
-    ctx.font = "8px 'Courier New', monospace";
-    ctx.fillText("x2 JUMP " + Math.floor(pct * 100) + "%", 14, 40);
+    ctx.globalAlpha = 0.15 + pct * 0.25;
+    ctx.font = "9px 'Courier New', monospace";
+    ctx.fillText("x2 JUMP " + Math.floor(pct * 100) + "%", 14, 42);
     ctx.globalAlpha = 1;
   }
 
-  // Jetpack fuel meter
+  // Jetpack fuel meter — wider and clearer
   if (jetpackUnlocked) {
     const fuelPct = jetpackFuel / JETPACK_MAX_FUEL;
-    const fuelY = player.canDoubleJump ? 46 : 34;
-    ctx.fillStyle = "#222233";
-    ctx.fillRect(12, fuelY, 40, 5);
-    ctx.fillStyle = fuelPct > 0.3 ? "#ff6600" : "#ff2200";
-    ctx.globalAlpha = 0.8;
-    ctx.fillRect(12, fuelY, 40 * fuelPct, 5);
+    const fuelY = player.canDoubleJump ? 44 : 35;
+    ctx.fillStyle = "#181828";
+    ctx.fillRect(12, fuelY, 50, 6);
+    ctx.strokeStyle = "#333344";
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(12, fuelY, 50, 6);
+    const fuelColor = fuelPct > 0.3 ? "#ff6600" : "#ff2200";
+    ctx.fillStyle = fuelColor;
+    ctx.globalAlpha = 0.9;
+    ctx.fillRect(12, fuelY, 50 * fuelPct, 6);
+    // Low fuel flash
+    if (fuelPct < 0.2 && fuelPct > 0) {
+      ctx.globalAlpha = 0.3 + Math.sin(Date.now() / 100) * 0.3;
+      ctx.fillRect(12, fuelY, 50 * fuelPct, 6);
+    }
     ctx.globalAlpha = 1;
-    ctx.fillStyle = "#555566";
-    ctx.font = "8px 'Courier New', monospace";
-    ctx.fillText("JET", 14, fuelY + 12);
+    ctx.fillStyle = "#666677";
+    ctx.font = "bold 9px 'Courier New', monospace";
+    ctx.fillText("JET", 14, fuelY + 14);
   }
 
   // Drone kills counter
   if (droneKills > 0) {
-    const killY = jetpackUnlocked ? (player.canDoubleJump ? 64 : 52) : (player.canDoubleJump ? 50 : 38);
+    const killY = jetpackUnlocked ? (player.canDoubleJump ? 66 : 57) : (player.canDoubleJump ? 50 : 42);
     ctx.fillStyle = "#ff4444";
-    ctx.globalAlpha = 0.7;
-    ctx.font = "8px 'Courier New', monospace";
+    ctx.globalAlpha = 0.8;
+    ctx.font = "bold 9px 'Courier New', monospace";
     ctx.fillText("KILLS " + droneKills, 14, killY);
     ctx.globalAlpha = 1;
   }
 
-  // Shoot cooldown indicator (small bar near player)
+  // Shoot cooldown indicator (bar above player)
   if (shootCooldown > 0) {
-    ctx.fillStyle = "#00ffcc";
-    ctx.globalAlpha = 0.3;
     const cdPct = shootCooldown / SHOOT_COOLDOWN;
-    ctx.fillRect(player.x, player.y - 6, player.width * (1 - cdPct), 2);
+    // Background
+    ctx.fillStyle = "#181828";
+    ctx.globalAlpha = 0.4;
+    ctx.fillRect(player.x, player.y - 8, player.width, 3);
+    // Fill
+    ctx.fillStyle = "#00ffcc";
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(player.x, player.y - 8, player.width * (1 - cdPct), 3);
     ctx.globalAlpha = 1;
   }
 
@@ -2494,6 +2549,16 @@ function drawHUD() {
 }
 
 function draw() {
+  // Screen shake
+  const shaking = screenShake > 0;
+  if (shaking) {
+    ctx.save();
+    const shakeX = (Math.random() - 0.5) * screenShake * 1.2;
+    const shakeY = (Math.random() - 0.5) * screenShake * 1.2;
+    ctx.translate(shakeX, shakeY);
+    screenShake--;
+  }
+
   drawSky();
   drawStars();
   drawMoon();
@@ -2630,7 +2695,21 @@ function draw() {
     }
   }
 
+  // Death flash overlay
+  if (deathFlash > 0) {
+    ctx.fillStyle = "#ff0033";
+    ctx.globalAlpha = deathFlash / 15 * 0.35;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 1;
+    deathFlash--;
+  }
+
   drawScanlines();
+
+  // Close screen shake transform
+  if (shaking) {
+    ctx.restore();
+  }
 }
 
 function update() {
@@ -2667,6 +2746,7 @@ function update() {
     difficultyTier = "";
   }
   gameSpeed = Math.min(MAX_SPEED, INITIAL_SPEED + score * speedIncrement);
+  if (gameSpeed > maxSpeedReached) maxSpeedReached = gameSpeed;
   score += gameSpeed * 0.05;
 
   // Check for tunnel unlock — pause with instructions
