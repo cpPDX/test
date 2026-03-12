@@ -160,6 +160,12 @@ let timePeriodFlashTimer = 0;  // flash when period changes
 // Unlock tutorial pause state
 let unlockPause = null; // { title, lines, color } when active
 
+// Countdown state (after dismissing unlock pause dialogs)
+let countdownTimer = 0;        // frames remaining in countdown
+let countdownNumber = 0;       // current number to display (3, 2, 1)
+const COUNTDOWN_SECONDS = 3;
+const FRAMES_PER_SECOND = 60;
+
 // Stats tracking
 let maxSpeedReached = 0;
 let gameStartTime = 0;
@@ -234,18 +240,24 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "Escape") {
     if (state === "playing") {
       pauseGame();
-    } else if (state === "paused") {
-      unlockPause = null;
+    } else if (state === "paused" && !unlockPause && countdownTimer <= 0) {
       resumeGame();
     }
     e.preventDefault();
     return;
   }
 
-  // Unlock tutorial pause — any key dismisses
+  // Unlock tutorial pause — Enter/Space clicks the OK button
   if (state === "paused" && unlockPause) {
-    unlockPause = null;
-    resumeGame();
+    if (e.code === "Enter" || e.code === "Space") {
+      dismissUnlockPause();
+    }
+    e.preventDefault();
+    return;
+  }
+
+  // Block input during countdown
+  if (state === "paused" && countdownTimer > 0) {
     e.preventDefault();
     return;
   }
@@ -324,8 +336,9 @@ canvas.addEventListener("touchstart", (e) => {
     return;
   }
   if (state === "paused" && unlockPause) {
-    unlockPause = null;
-    resumeGame();
+    if (isInsideOkayButton(pos.x, pos.y)) {
+      dismissUnlockPause();
+    }
     return;
   }
   if (state === "paused") return;
@@ -346,6 +359,17 @@ canvas.addEventListener("touchend", (e) => {
   e.preventDefault();
   keys["ArrowUp"] = false;
   keys["ArrowDown"] = false;
+});
+
+// Mouse click on canvas for OK button in unlock pause dialogs (desktop)
+canvas.addEventListener("click", (e) => {
+  if (state === "paused" && unlockPause) {
+    const rect = canvas.getBoundingClientRect();
+    const pos = screenToCanvas(e.clientX, e.clientY);
+    if (isInsideOkayButton(pos.x, pos.y)) {
+      dismissUnlockPause();
+    }
+  }
 });
 
 function confirmInitials() {
@@ -395,6 +419,8 @@ function startGame() {
   currentTimePeriodName = "";
   timePeriodFlashTimer = 0;
   unlockPause = null;
+  countdownTimer = 0;
+  countdownNumber = 0;
   maxSpeedReached = INITIAL_SPEED;
   gameStartTime = performance.now();
   screenShake = 0;
@@ -434,6 +460,32 @@ function resumeGame() {
   state = "playing";
   resumeGraceFrames = 10; // ~166ms collision immunity so obstacles near player don't instant-kill
   document.getElementById("pause-screen").classList.add("hidden");
+}
+
+// Returns the OK button bounds for unlock pause dialogs (matches drawing code)
+function getOkayButtonBounds() {
+  const cx = canvas.width / 2;
+  const boxW = 320;
+  const boxY = 55;
+  const boxH = 30 + (unlockPause ? unlockPause.lines.length * 22 : 0) + 55;
+  const btnW = 100;
+  const btnH = 28;
+  const btnX = cx - btnW / 2;
+  const btnY = boxY + boxH - 40;
+  return { x: btnX, y: btnY, w: btnW, h: btnH };
+}
+
+function isInsideOkayButton(px, py) {
+  const btn = getOkayButtonBounds();
+  return px >= btn.x && px <= btn.x + btn.w && py >= btn.y && py <= btn.y + btn.h;
+}
+
+function dismissUnlockPause() {
+  unlockPause = null;
+  // Start countdown instead of resuming immediately
+  countdownTimer = COUNTDOWN_SECONDS * FRAMES_PER_SECOND;
+  countdownNumber = COUNTDOWN_SECONDS;
+  // Stay paused during countdown — state remains "paused"
 }
 
 function quitGame() {
@@ -1008,7 +1060,7 @@ function createUndergroundCombo() {
       type: "puddle_zap",
     });
     pair.push({
-      x: canvas.width + 130 + Math.random() * 40,
+      x: canvas.width + 200 + Math.random() * 60,
       y: GROUND_Y,
       width: 30,
       height: UNDERGROUND_Y - GROUND_Y - DUCK_HEIGHT + 2,
@@ -1026,7 +1078,7 @@ function createUndergroundCombo() {
       spawnTime: performance.now(),
     });
     pair.push({
-      x: canvas.width + 150 + Math.random() * 40,
+      x: canvas.width + 220 + Math.random() * 60,
       y: UNDERGROUND_Y - 40,
       width: 20,
       height: 40,
@@ -1043,7 +1095,7 @@ function createUndergroundCombo() {
       type: "barrel_stack",
     });
     pair.push({
-      x: canvas.width + 120 + Math.random() * 30,
+      x: canvas.width + 200 + Math.random() * 60,
       y: UNDERGROUND_Y - 28,
       width: 55,
       height: 28,
@@ -1062,7 +1114,7 @@ function updateObstacles() {
   if (playerUnderground) {
     // Underground obstacle spawning — tighter gaps than surface
     tunnelObstacleTimer++;
-    const ugGap = Math.max(35, minGap - 15); // significantly tighter underground
+    const ugGap = Math.max(50, minGap); // give player enough time to land and react
     if (tunnelObstacleTimer > ugGap) {
       // 25% chance of combo obstacles (two in quick succession)
       if (Math.random() < 0.25) {
@@ -2615,7 +2667,7 @@ function draw() {
     ctx.lineWidth = 2;
     ctx.globalAlpha = 0.9;
     const boxW = 320;
-    const boxH = 30 + unlockPause.lines.length * 22 + 30;
+    const boxH = 30 + unlockPause.lines.length * 22 + 55;
     const boxX = cx - boxW / 2;
     const boxY = 55;
     ctx.fillRect(boxX, boxY, boxW, boxH);
@@ -2639,13 +2691,43 @@ function draw() {
       ctx.fillText(unlockPause.lines[i], cx, boxY + 50 + i * 22);
     }
 
-    // Continue prompt
-    ctx.font = "bold 10px 'Courier New', monospace";
+    // OK button
+    const btnW = 100;
+    const btnH = 28;
+    const btnX = cx - btnW / 2;
+    const btnY = boxY + boxH - 40;
+    const pulse2 = 0.7 + Math.sin(Date.now() / 300) * 0.3;
+    ctx.globalAlpha = pulse2;
     ctx.fillStyle = col;
-    ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 300) * 0.3;
-    const promptText = isTouchDevice ? "TAP TO CONTINUE" : "PRESS ANY KEY TO CONTINUE";
-    ctx.fillText(promptText, cx, boxY + boxH - 8);
+    ctx.fillRect(btnX, btnY, btnW, btnH);
+    ctx.fillStyle = "#000000";
+    ctx.font = "bold 14px 'Courier New', monospace";
+    ctx.fillText("OKAY", cx, btnY + btnH / 2 + 5);
     ctx.globalAlpha = 1;
+    ctx.textAlign = "left";
+    ctx.restore();
+  }
+
+  // Countdown overlay (after OK is clicked on unlock pause)
+  if (countdownTimer > 0 && !unlockPause && state === "paused") {
+    ctx.save();
+    ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const cx2 = canvas.width / 2;
+    const cy2 = canvas.height / 2;
+    const num = countdownNumber;
+    const scale = 1 + (1 - (countdownTimer % FRAMES_PER_SECOND) / FRAMES_PER_SECOND) * 0.3;
+    ctx.font = `bold ${Math.floor(72 * scale)}px 'Courier New', monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#00ffcc";
+    ctx.shadowColor = "#00ffcc";
+    ctx.shadowBlur = 20;
+    ctx.globalAlpha = Math.min(1, (countdownTimer % FRAMES_PER_SECOND) / 10);
+    ctx.fillText(num > 0 ? String(num) : "GO!", cx2, cy2);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ctx.textBaseline = "alphabetic";
     ctx.textAlign = "left";
     ctx.restore();
   }
@@ -2713,6 +2795,16 @@ function draw() {
 }
 
 function update() {
+  // Handle countdown timer (runs while still paused)
+  if (state === "paused" && countdownTimer > 0) {
+    countdownTimer--;
+    countdownNumber = Math.ceil(countdownTimer / FRAMES_PER_SECOND);
+    if (countdownTimer <= 0) {
+      countdownNumber = 0;
+      resumeGame();
+    }
+    return;
+  }
   if (state === "paused") return;
   if (state !== "playing") {
     updateParticles();
