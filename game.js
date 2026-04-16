@@ -74,7 +74,6 @@ const DOUBLE_JUMP_FORCE = -11;
 // Underground tunnel constants
 const UNDERGROUND_Y = 340;        // Ground level inside tunnel (50px below GROUND_Y)
 const TUNNEL_CEILING_Y = 40;      // Top of tunnel visual ceiling for immersive mode
-const TUNNEL_FLOOR_Y = GROUND_Y;  // Floor draws at normal ground level in immersive mode
 
 // Jetpack constants
 const JETPACK_MAX_FUEL = 100;
@@ -84,13 +83,17 @@ const JETPACK_RECHARGE_RATE = 0.8; // per frame on ground
 // Mobile / touch detection
 const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 
-// Leaderboard helpers (localStorage)
+// Leaderboard helpers (localStorage with in-memory cache)
+let _leaderboardCache = null;
 function loadLeaderboard() {
+  if (_leaderboardCache) return _leaderboardCache;
   try {
-    return JSON.parse(localStorage.getItem("neonSprintLeaderboard")) || [];
-  } catch { return []; }
+    _leaderboardCache = JSON.parse(localStorage.getItem("neonSprintLeaderboard")) || [];
+  } catch { _leaderboardCache = []; }
+  return _leaderboardCache;
 }
 function saveLeaderboard(board) {
+  _leaderboardCache = board;
   try { localStorage.setItem("neonSprintLeaderboard", JSON.stringify(board)); } catch {}
 }
 function isHighScore(s) {
@@ -176,6 +179,30 @@ let deathFlash = 0; // frames of red flash on death
 const buildings = [];
 const farBuildings = [];
 
+function generateWindowColors(w, h) {
+  const winW = 3, winH = 4;
+  const cols = Math.floor(w / 10);
+  const rows = Math.floor(h / 14);
+  const colors = [];
+  for (let r = 1; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const wx = 4 + c * 10;
+      const wy = 6 + r * 14;
+      const lit = Math.sin(wx * 13.7 + wy * 7.3) > 0;
+      if (lit) {
+        const flicker = Math.random() > 0.98;
+        colors.push({
+          r, c,
+          color: flicker
+            ? "#ffaa00"
+            : `rgba(${180 + Math.random() * 75}, ${150 + Math.random() * 60}, ${50 + Math.random() * 200}, 0.7)`,
+        });
+      }
+    }
+  }
+  return colors;
+}
+
 function generateBuildings() {
   buildings.length = 0;
   farBuildings.length = 0;
@@ -190,6 +217,7 @@ function generateBuildings() {
       w,
       h,
       windows: Math.random() > 0.3,
+      windowColors: generateWindowColors(w, h),
       color: `hsl(${260 + Math.random() * 30}, 30%, ${8 + Math.random() * 6}%)`,
     });
     x += w + Math.random() * 10;
@@ -205,6 +233,7 @@ function generateBuildings() {
       w,
       h,
       windows: Math.random() > 0.2,
+      windowColors: generateWindowColors(w, h),
       antenna: Math.random() > 0.6,
       color: `hsl(${240 + Math.random() * 40}, 25%, ${12 + Math.random() * 8}%)`,
       glowColor: ["#ff00ff", "#00ffcc", "#ff6600", "#00aaff"][Math.floor(Math.random() * 4)],
@@ -380,8 +409,7 @@ function confirmInitials() {
   showGameOverScreen();
 }
 
-function startGame() {
-  state = "playing";
+function resetGameState() {
   score = 0;
   gameSpeed = INITIAL_SPEED;
   frameCount = 0;
@@ -425,9 +453,14 @@ function startGame() {
   gameStartTime = performance.now();
   screenShake = 0;
   deathFlash = 0;
+  generateBuildings();
+}
+
+function startGame() {
+  state = "playing";
+  resetGameState();
   // Only show touch/control hints on first start after page load
   touchHintTimer = (isTouchDevice && isFirstStart) ? 180 : 0;
-  generateBuildings();
 
   document.getElementById("start-screen").classList.add("hidden");
   document.getElementById("game-over-screen").classList.add("hidden");
@@ -490,29 +523,7 @@ function dismissUnlockPause() {
 
 function quitGame() {
   state = "start";
-  score = 0;
-  gameSpeed = INITIAL_SPEED;
-  obstacles = [];
-  particles = [];
-  player.y = GROUND_Y - PLAYER_HEIGHT;
-  player.height = PLAYER_HEIGHT;
-  player.vy = 0;
-  player.jumping = false;
-  player.ducking = false;
-  player.jumpsUsed = 0;
-  player.canDoubleJump = false;
-  tunnelUnlocked = false;
-  tunnelFlashTimer = 0;
-  tunnel = null;
-  playerUnderground = false;
-  tunnelObstacleTimer = 0;
-  tunnelExitGrace = 0;
-  wasUnderground = false;
-  jetpackUnlocked = false;
-  jetpackFuel = JETPACK_MAX_FUEL;
-  jetpackActive = false;
-  jetpackFlashTimer = 0;
-  generateBuildings();
+  resetGameState();
 
   document.getElementById("pause-screen").classList.add("hidden");
   document.getElementById("game-over-screen").classList.add("hidden");
@@ -763,6 +774,7 @@ function updateProjectiles() {
     b.life -= 0.008;
 
     // Check collision with drones
+    let hitDrone = false;
     for (let j = obstacles.length - 1; j >= 0; j--) {
       const obs = obstacles[j];
       if (obs.type !== "drone") continue;
@@ -803,12 +815,13 @@ function updateProjectiles() {
 
         obstacles.splice(j, 1);
         projectiles.splice(i, 1);
+        hitDrone = true;
         break;
       }
     }
 
-    // Remove if off-screen or expired
-    if (i < projectiles.length && (projectiles[i].x > canvas.width + 20 || projectiles[i].life <= 0)) {
+    // Remove if off-screen or expired (skip if already removed by drone hit)
+    if (!hitDrone && i < projectiles.length && (projectiles[i].x > canvas.width + 20 || projectiles[i].life <= 0)) {
       projectiles.splice(i, 1);
     }
   }
@@ -868,8 +881,9 @@ function updatePlayer() {
   player.vy += GRAVITY;
   player.y += player.vy;
 
-  // Jetpack hover: hold Down/S while airborne to slow descent
-  if (jetpackUnlocked && player.jumping && wantDuck && jetpackFuel > 0) {
+  // Jetpack hover: hold jump (Space/Up/W) while airborne to hover
+  const holdJump = keys["Space"] || keys["ArrowUp"] || keys["KeyW"];
+  if (jetpackUnlocked && player.jumping && holdJump && jetpackFuel > 0) {
     jetpackActive = true;
     player.vy *= 0.3;
     player.vy = Math.max(player.vy, -2);
@@ -1128,8 +1142,11 @@ function updateObstacles() {
   } else if (
     tunnelExitGrace <= 0 &&
     frameCount > minGap &&
-    (obstacles.length === 0 ||
-      obstacles[obstacles.length - 1].x < canvas.width - 200 - Math.random() * 150)
+    (function() {
+      if (obstacles.length === 0) return true;
+      const rightmost = Math.max(...obstacles.map(o => o.x + o.width));
+      return rightmost < canvas.width - 200 - Math.random() * 150;
+    })()
   ) {
     // Normal surface obstacle spawning (skip if tunnel entrance is on screen)
     const tunnelOnScreen = tunnel && tunnel.x < canvas.width && tunnel.x > -100;
@@ -1186,6 +1203,8 @@ function checkCollisions() {
       obs.type === "barrel_stack" || obs.type === "crusher" || obs.type === "toxic_cloud";
     if (playerUnderground && !isUndergroundObs) continue;
     if (!playerUnderground && isUndergroundObs) continue;
+    // Grace period after surfacing — skip surface obstacles near the exit
+    if (tunnelExitGrace > 0 && !isUndergroundObs) continue;
 
     const ox = obs.x + 3;
     const oy = obs.y + 3;
@@ -1243,11 +1262,13 @@ function drawStars() {
     [430, 10], [590, 30], [680, 52], [770, 28], [200, 32],
     [40, 60], [500, 8], [620, 55], [340, 22], [750, 12],
   ];
+  const starOffset = (groundOffset * 0.02) % canvas.width;
   for (const [sx, sy] of starSeed) {
+    const px = ((sx - starOffset) % canvas.width + canvas.width) % canvas.width;
     const flicker = 0.3 + Math.sin(Date.now() / 800 + sx * 0.5) * 0.25;
     ctx.globalAlpha = flicker * period.starAlpha;
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(sx, sy, 1.5, 1.5);
+    ctx.fillRect(px, sy, 1.5, 1.5);
   }
   ctx.globalAlpha = 1;
 }
@@ -1419,24 +1440,13 @@ function drawCityLayer(layer, speed, alpha) {
     ctx.fillRect(bx, by, b.w, 2);
     ctx.globalAlpha = alpha;
 
-    // Windows
-    if (b.windows) {
-      const winW = 3;
-      const winH = 4;
-      const cols = Math.floor(b.w / 10);
-      const rows = Math.floor(b.h / 14);
-      for (let r = 1; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const wx = bx + 4 + c * 10;
-          const wy = by + 6 + r * 14;
-          const lit = Math.sin(wx * 13.7 + wy * 7.3) > 0;
-          if (lit) {
-            ctx.fillStyle = Math.random() > 0.98
-              ? "#ffaa00"
-              : `rgba(${180 + Math.random() * 75}, ${150 + Math.random() * 60}, ${50 + Math.random() * 200}, 0.7)`;
-            ctx.fillRect(wx, wy, winW, winH);
-          }
-        }
+    // Windows (pre-baked colors from generateBuildings)
+    if (b.windows && b.windowColors) {
+      for (const win of b.windowColors) {
+        const wx = bx + 4 + win.c * 10;
+        const wy = by + 6 + win.r * 14;
+        ctx.fillStyle = win.color;
+        ctx.fillRect(wx, wy, 3, 4);
       }
     }
 
