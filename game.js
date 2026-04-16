@@ -2928,6 +2928,9 @@ function resizeCanvas() {
   }
   canvas.style.width = displayW + "px";
   canvas.style.height = displayH + "px";
+  const container = document.getElementById("game-container");
+  container.style.width = displayW + "px";
+  container.style.height = displayH + "px";
 }
 
 window.addEventListener("resize", resizeCanvas);
