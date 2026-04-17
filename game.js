@@ -143,6 +143,7 @@ let jetpackUnlocked = false;
 let jetpackFuel = JETPACK_MAX_FUEL;
 let jetpackActive = false;
 let jetpackFlashTimer = 0;
+let jumpKeyReleased = false;
 
 // Underground tunnel state
 let tunnel = null;      // { x, entranceWidth, bodyWidth, exitWidth }
@@ -430,6 +431,7 @@ function resetGameState() {
   jetpackFuel = JETPACK_MAX_FUEL;
   jetpackActive = false;
   jetpackFlashTimer = 0;
+  jumpKeyReleased = false;
   tunnel = null;
   playerUnderground = false;
   tunnelObstacleTimer = 0;
@@ -881,9 +883,19 @@ function updatePlayer() {
   player.vy += GRAVITY;
   player.y += player.vy;
 
-  // Jetpack hover: hold jump (Space/Up/W) while airborne to hover
+  // Track jump key release — required before hover can activate
   const holdJump = keys["Space"] || keys["ArrowUp"] || keys["KeyW"];
-  if (jetpackUnlocked && player.jumping && holdJump && jetpackFuel > 0) {
+
+  if (player.jumping && !holdJump) {
+    jumpKeyReleased = true;
+  }
+
+  if (!player.jumping) {
+    jumpKeyReleased = false;
+  }
+
+  // Jetpack hover: must have jumped, released jump key, then re-held it
+  if (jetpackUnlocked && player.jumping && holdJump && jumpKeyReleased && jetpackFuel > 0) {
     jetpackActive = true;
     player.vy *= 0.3;
     player.vy = Math.max(player.vy, -2);
